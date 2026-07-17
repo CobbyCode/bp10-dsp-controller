@@ -145,6 +145,12 @@ static void apply_dsp_profile(void)
 // ---------------------------------------------------------------------------
 static void init_network(void)
 {
+    // WiFi-Manager initialisieren (WiFi-Stack, Event-Loop, Interfaces)
+    esp_err_t wifi_err = wifi_manager_init();
+    if (wifi_err != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi-Manager-Init fehlgeschlagen: %s", esp_err_to_name(wifi_err));
+    }
+
     // Hostname aus MAC generieren
     char hostname[32];
     wifi_manager_generate_hostname(hostname, sizeof(hostname));
