@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>A800X DSP Controller</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23101719'/%3E%3Cpath d='M14 39h8l5-22 9 34 6-24 4 12h5' fill='none' stroke='%23a8ff35' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -11,88 +12,161 @@
   <h1>A800X DSP Controller</h1>
   <div id="status-bar">
     <span id="dsp-status" class="status-dot dot-off">DSP ✗</span>
-    <span id="wifi-status" class="status-dot dot-off">AP</span>
-    <span id="device-ip" class="ip">-</span>
+    <span id="wifi-status" class="status-dot dot-off">-</span>
   </div>
 </header>
 
 <main>
-  <!-- DSP Unavailable (angezeigt wenn kein DSP verbunden) -->
+  <!-- DSP unavailable -->
   <section id="dsp-unavailable" class="info-section">
     <div class="unavailable-notice">
       <span class="icon">⚠️</span>
-      <span>DSP nicht verfügbar</span>
-      <span class="sub">Kein MVSilicon-Gerät erkannt</span>
+      <span>DSP unavailable</span>
+      <span class="sub">No MVSilicon device detected</span>
     </div>
   </section>
 
   <!-- DSP Controls (nur bei Connected sichtbar) -->
   <section id="dsp-controls">
-    <h2>DSP-Steuerung</h2>
-    <div id="ns-readback" class="readback-badge">NS: -</div>
+    <h2>DSP Control</h2>
     <div class="control-grid">
-      <label class="toggle">
-        <input type="checkbox" id="noise-suppressor" data-effect="noise">
-        <span class="toggle-label">Noise Suppressor</span>
-      </label>
-      <label class="toggle">
-        <input type="checkbox" id="virtual-bass" data-effect="bass">
-        <span class="toggle-label">Virtual Bass</span>
-      </label>
-      <label class="toggle">
-        <input type="checkbox" id="silence-detector" data-effect="silence">
-        <span class="toggle-label">Silence Detector</span>
-      </label>
-      <label class="toggle">
-        <input type="checkbox" id="preeq-enable" data-effect="preeq">
-        <span class="toggle-label">PreEQ</span>
-      </label>
-      <label class="toggle">
-        <input type="checkbox" id="drc-enable" data-effect="drc">
-        <span class="toggle-label">DRC / Compressor</span>
-      </label>
+      <details class="module-card" id="noise-module">
+        <summary><span>Noise Suppressor</span><span id="noise-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="noise-suppressor"><span class="switch"></span></label>
+          <div class="parameter-grid">
+            <label class="field"><span>Threshold (dB)</span><input type="number" id="noise-threshold" step="0.01"></label>
+            <label class="field"><span>Ratio</span><input type="number" id="noise-ratio" step="1"></label>
+            <label class="field"><span>Attack (ms)</span><input type="number" id="noise-attack" step="1"></label>
+            <label class="field"><span>Release (ms)</span><input type="number" id="noise-release" step="1"></label>
+          </div>
+          <div class="form-actions"><button id="btn-noise-read" class="btn btn-secondary">Load Factory Values</button><button id="btn-noise-apply" class="btn btn-primary">Apply</button><span id="noise-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card" id="bass-module">
+        <summary><span>Virtual Bass</span><span id="bass-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="virtual-bass"><span class="switch"></span></label>
+          <div class="parameter-grid">
+            <label class="field"><span>Cutoff (Hz)</span><input type="number" id="bass-cutoff" step="1"></label>
+            <label class="field"><span>Intensity (%)</span><input type="number" id="bass-intensity" step="1"></label>
+          </div>
+          <label class="switch-row"><span><strong>BassEnhanced</strong></span><input type="checkbox" id="bass-enhanced"><span class="switch"></span></label>
+          <div class="form-actions"><button id="btn-bass-read" class="btn btn-secondary">Load Factory Values</button><button id="btn-bass-apply" class="btn btn-primary">Apply</button><span id="bass-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card" id="silence-module">
+        <summary><span>Silence Detector</span><span id="silence-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="silence-detector" disabled><span class="switch"></span></label>
+          <div class="form-actions"><button id="btn-silence-read" class="btn btn-secondary" disabled>Load Factory Values</button><button id="btn-silence-apply" class="btn btn-primary" disabled>Apply</button><span id="silence-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card module-card-wide" id="preeq-module">
+        <summary><span>PreEQ</span><span id="preeq-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <div class="parameter-grid">
+            <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="preeq-enable" disabled><span class="switch"></span></label>
+            <label class="field"><span>Pre-Gain (dB)</span><input type="number" id="preeq-pregain" step="0.01" disabled placeholder="Not read"></label>
+          </div>
+          <div class="eq-preview"><canvas id="preeq-canvas" width="900" height="300"></canvas><div class="preview-legend"><span class="actual">DSP Readback</span><span class="preview">Local Preview</span></div></div>
+          <div id="preeq-filters" class="preeq-editor-grid"><p class="module-hint">A complete PreEQ readback is required.</p></div>
+          <div class="form-actions"><button id="btn-preeq-read" class="btn btn-secondary" disabled>Load Factory Values</button><button id="btn-preeq-apply" class="btn btn-primary" disabled>Apply</button><span id="preeq-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card" id="drc-module">
+        <summary><span>DRC / Compressor</span><span id="drc-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Full-Band Enabled</strong></span><input type="checkbox" id="drc-enable" disabled><span class="switch"></span></label>
+          <div class="parameter-grid">
+            <label class="field"><span>Pre-Gain (dB)</span><input type="number" id="drc-pregain" step="0.01" disabled></label>
+            <label class="field"><span>Threshold (dB)</span><input type="number" id="drc-threshold" step="0.01" disabled></label>
+            <label class="field"><span>Ratio</span><input type="number" id="drc-ratio" step="0.01" disabled></label>
+            <label class="field"><span>Attack (ms)</span><input type="number" id="drc-attack" step="1" disabled></label>
+            <label class="field"><span>Release (ms)</span><input type="number" id="drc-release" step="1" disabled></label>
+          </div>
+          <div class="form-actions"><button id="btn-drc-reset" class="btn btn-secondary" disabled>Load Factory Values</button><button id="btn-drc-apply" class="btn btn-primary" disabled>Apply</button><span id="drc-message" class="form-message"></span></div>
+        </div>
+      </details>
     </div>
-  </section>
-
-  <!-- PreEQ Filter Details -->
-  <section id="preeq-details" class="hidden">
-    <h3>PreEQ Filter</h3>
-    <div id="preeq-filters"></div>
   </section>
 
   <!-- System Status -->
   <section id="system-status">
     <h2>System</h2>
     <div class="info-grid">
-      <div><span class="label">Gerät</span><span id="sys-hostname">-</span></div>
+      <div><span class="label">Device</span><span id="sys-hostname">-</span></div>
       <div><span class="label">MAC</span><span id="sys-mac">-</span></div>
-      <div><span class="label">AP-IP</span><span id="sys-ap-ip">192.168.4.1</span></div>
+      <div id="sys-ap-row"><span class="label">AP-IP</span><span id="sys-ap-ip">-</span></div>
       <div><span class="label">STA-IP</span><span id="sys-ip">-</span></div>
+      <div><span class="label">mDNS</span><span id="sys-mdns">-</span></div>
       <div><span class="label">Firmware</span><span id="sys-version">-</span></div>
     </div>
-  </section>
-
-  <!-- Profile Management -->
-  <section id="profiles">
-    <h2>Profile</h2>
-    <div class="button-row">
-      <button id="btn-profile-save" class="btn btn-secondary">Speichern</button>
-      <button id="btn-profile-load" class="btn btn-secondary">Laden</button>
+    <div id="connection-banner" class="connection-banner hidden" role="status">
+      <span id="connection-banner-text"></span>
     </div>
   </section>
 
-  <!-- Configuration -->
-  <section id="config">
-    <h2>Konfiguration</h2>
+  <section id="network">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">Connectivity</span>
+        <h2>Home LAN</h2>
+      </div>
+      <span id="wifi-config-state" class="state-pill">NOT CONFIGURED</span>
+    </div>
+    <form id="wifi-form" class="settings-form">
+      <label class="field">
+        <span>Wi-Fi Name (SSID)</span>
+        <span class="wifi-ssid-row">
+          <input type="text" id="wifi-ssid" maxlength="31" autocomplete="username" placeholder="My Wi-Fi" required>
+          <button type="button" id="btn-wifi-scan" class="btn btn-secondary">Scan Wi-Fi</button>
+        </span>
+      </label>
+      <div id="wifi-scan-results" class="wifi-scan-results hidden" aria-live="polite"></div>
+      <label class="field">
+        <span>Wi-Fi Password</span>
+        <input type="password" id="wifi-password" maxlength="63" autocomplete="current-password" placeholder="Keep saved password">
+      </label>
+      <label class="switch-row">
+        <span>
+          <strong>Automatically Disable Wi-Fi</strong>
+          <small>Off = remain accessible during intensive or external use.</small>
+        </span>
+        <input type="checkbox" id="wifi-auto-off">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="form-actions">
+        <button type="submit" id="btn-wifi-save" class="btn btn-primary">Save &amp; Connect</button>
+        <span id="wifi-form-message" class="form-message" role="status"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- DSP-Konfiguration -->
+  <section id="dsp-config">
+    <h2>DSP-Konfiguration</h2>
+    <p class="section-hint">Nur DSP-Module – keine WiFi- oder Gerätedaten. Zwischen ESPs übertragbar.</p>
     <div class="button-row">
-      <button id="btn-config-export" class="btn btn-secondary">Exportieren</button>
-      <button id="btn-config-import" class="btn btn-secondary">Importieren</button>
+      <button id="btn-dsp-export" class="btn btn-secondary">Exportieren</button>
+      <button id="btn-dsp-import" class="btn btn-secondary">Importieren</button>
+    </div>
+    <div id="import-preview" class="import-preview hidden">
+      <div class="preview-header">
+        <span>Import-Vorschau</span>
+        <button id="btn-import-cancel" class="btn btn-secondary btn-small">Abbrechen</button>
+      </div>
+      <div id="import-preview-content"></div>
+      <div class="form-actions">
+        <button id="btn-import-apply" class="btn btn-primary">Auf DSP anwenden</button>
+        <span id="import-message" class="form-message"></span>
+      </div>
     </div>
   </section>
 
   <!-- OTA Update -->
   <section id="ota">
-    <h2>Firmware-Update</h2>
+    <h2>Firmware Update</h2>
     <div class="input-row">
       <input type="url" id="ota-url" placeholder="https://.../firmware.bin">
       <button id="btn-ota-update" class="btn btn-primary">Update</button>
@@ -104,8 +178,8 @@
 
   <!-- Factory Reset -->
   <section id="factory-reset">
-    <h2>Werkseinstellungen</h2>
-    <button id="btn-factory-reset" class="btn btn-danger">Zurücksetzen</button>
+    <h2>Factory Reset</h2>
+    <button id="btn-factory-reset" class="btn btn-danger">Reset</button>
   </section>
 </main>
 

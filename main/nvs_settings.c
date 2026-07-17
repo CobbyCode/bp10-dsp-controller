@@ -22,7 +22,7 @@ static bool s_nvs_opened = false;
 #define NVS_KEY_WIFI_PASS       "wifi_pass"
 #define NVS_KEY_HOSTNAME        "hostname"
 #define NVS_KEY_CONFIG          "device_cfg"
-#define NVS_KEY_PROFILE_PREFIX  "profile_"
+#define NVS_KEY_DSP_CONFIG      "dsp_cfg"
 
 static esp_err_t open_nvs(void)
 {
@@ -107,7 +107,8 @@ esp_err_t nvs_settings_save_config(const device_config_t *config)
     if (!config) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
 
-    nvs_set_str(s_nvs_handle, NVS_KEY_CONFIG, (const char *)config);
+    ESP_RETURN_ON_ERROR(nvs_set_blob(s_nvs_handle, NVS_KEY_CONFIG,
+                                     config, sizeof(*config)), TAG, "config set");
     return nvs_commit(s_nvs_handle);
 }
 
@@ -121,63 +122,69 @@ esp_err_t nvs_settings_load_config(device_config_t *config)
     return nvs_get_blob(s_nvs_handle, NVS_KEY_CONFIG, config, &len);
 }
 
-esp_err_t nvs_settings_save_profile(uint8_t index, const dsp_profile_t *profile)
+// ---------------------------------------------------------------------------
+// DSP-Konfiguration (eine aktive Konfiguration, kein Profil-System)
+// ---------------------------------------------------------------------------
+
+esp_err_t nvs_settings_save_dsp_config(const dsp_profile_t *config)
 {
-    if (!profile || index > A800X_MAX_PROFILES) return ESP_ERR_INVALID_ARG;
+    if (!config) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
 
-    char key[24];
-    snprintf(key, sizeof(key), "%s%02x", NVS_KEY_PROFILE_PREFIX, index);
-
-    nvs_set_blob(s_nvs_handle, key, profile, sizeof(dsp_profile_t));
-    return nvs_commit(s_nvs_handle);
-}
-
-esp_err_t nvs_settings_load_profile(uint8_t index, dsp_profile_t *profile)
-{
-    if (!profile || index > A800X_MAX_PROFILES) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
-
-    memset(profile, 0, sizeof(*profile));
-    char key[24];
-    snprintf(key, sizeof(key), "%s%02x", NVS_KEY_PROFILE_PREFIX, index);
-
-    size_t len = sizeof(dsp_profile_t);
-    return nvs_get_blob(s_nvs_handle, key, profile, &len);
-}
-
-esp_err_t nvs_settings_load_active_profile(dsp_profile_t *profile)
-{
-    return nvs_settings_load_profile(0, profile);
-}
-
-esp_err_t nvs_settings_save_active_profile(const dsp_profile_t *profile)
-{
-    return nvs_settings_save_profile(0, profile);
-}
-
-esp_err_t nvs_settings_list_profiles(char names[][A800X_PROFILE_NAME_MAX_LEN],
-                                     uint8_t max_count, uint8_t *count)
-{
-    if (!names || !count) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
-
-    *count = 0;
-
-    for (uint8_t i = 1; i <= A800X_MAX_PROFILES && *count < max_count; i++) {
-        dsp_profile_t profile;
-        if (nvs_settings_load_profile(i, &profile) == ESP_OK) {
-            if (profile.profile_name[0] != '\0') {
-                strncpy(names[*count], profile.profile_name,
-                        A800X_PROFILE_NAME_MAX_LEN - 1);
-                names[*count][A800X_PROFILE_NAME_MAX_LEN - 1] = '\0';
-                (*count)++;
-            }
-        }
+    esp_err_t err = nvs_set_blob(s_nvs_handle, NVS_KEY_DSP_CONFIG,
+                                 config, sizeof(dsp_profile_t));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "DSP-Konfiguration speichern fehlgeschlagen: %s",
+                 esp_err_to_name(err));
+        return err;
     }
-
-    return ESP_OK;
+    err = nvs_commit(s_nvs_handle);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "DSP-Konfiguration im NVS gespeichert");
+    }
+    return err;
 }
+
+esp_err_t nvs_settings_load_dsp_config(dsp_profile_t *config)
+{
+    if (!config) return ESP_ERR_INVALID_ARG;
+    ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
+
+    memset(config, 0, sizeof(*config));
+    size_t len = sizeof(dsp_profile_t);
+    esp_err_t err = nvs_get_blob(s_nvs_handle, NVS_KEY_DSP_CONFIG,
+                                 config, &len);
+    if (err == ESP_OK && len == sizeof(dsp_profile_t)) {
+        ESP_LOGI(TAG, "DSP-Konfiguration aus NVS geladen");
+    }
+    return err;
+}
+
+esp_err_t nvs_settings_clear_dsp_config(void)
+{
+    ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
+    nvs_erase_key(s_nvs_handle, NVS_KEY_DSP_CONFIG);
+    esp_err_t err = nvs_commit(s_nvs_handle);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "DSP-Konfiguration aus NVS gelöscht");
+    }
+    return err;
+}
+
+bool nvs_settings_has_dsp_config(void)
+{
+    if (!s_nvs_opened && open_nvs() != ESP_OK) return false;
+
+    dsp_profile_t config;
+    memset(&config, 0, sizeof(config));
+    size_t len = sizeof(config);
+    return nvs_get_blob(s_nvs_handle, NVS_KEY_DSP_CONFIG, &config, &len) == ESP_OK
+           && len == sizeof(dsp_profile_t);
+}
+
+// ---------------------------------------------------------------------------
+// Factory Reset
+// ---------------------------------------------------------------------------
 
 esp_err_t nvs_settings_factory_reset(void)
 {
@@ -185,6 +192,7 @@ esp_err_t nvs_settings_factory_reset(void)
     esp_err_t err = nvs_erase_all(s_nvs_handle);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs_handle);
+        ESP_LOGI(TAG, "Factory Reset: NVS gelöscht (kein DSP-Flash-Save)");
     }
     return err;
 }

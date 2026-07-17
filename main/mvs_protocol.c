@@ -81,7 +81,7 @@ esp_err_t mvs_build_preeq_full_frame(const mvs_preeq_state_t *state,
                                      uint8_t *buffer, size_t buf_size)
 {
     // Frame: A5 5A 99 6B FF <106B> 16
-    if (buf_size < 111) return ESP_ERR_INVALID_SIZE;
+    if (buf_size < 112) return ESP_ERR_INVALID_SIZE;
 
     ESP_RETURN_ON_ERROR(build_header(MVS_EFFECT_PREEQ, 0x6B, buffer, buf_size), TAG, "header");
     buffer[4] = 0xFF;  // Readback-Response-Marker
@@ -107,8 +107,8 @@ esp_err_t mvs_build_preeq_full_frame(const mvs_preeq_state_t *state,
 esp_err_t mvs_build_drc_full_frame(const mvs_drc_packed_state_t *state,
                                    uint8_t *buffer, size_t buf_size)
 {
-    // Frame: A5 5A 9A 37 FF <54B> 16
-    if (buf_size < 59) return ESP_ERR_INVALID_SIZE;
+    // Frame: A5 5A 9A 37 FF <54B> 16 = 60 Bytes total.
+    if (buf_size < 60) return ESP_ERR_INVALID_SIZE;
 
     ESP_RETURN_ON_ERROR(build_header(MVS_EFFECT_DRC, 0x37, buffer, buf_size), TAG, "header");
     buffer[4] = 0xFF;

@@ -7,6 +7,7 @@
 #include "http_server.h"
 #include "web_ui.h"
 #include "app_config.h"
+#include "wifi_manager.h"
 #include <string.h>
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -19,6 +20,7 @@ static const char *TAG = "a800x_http";
 
 static esp_err_t handler_index_get(httpd_req_t *req)
 {
+    wifi_manager_note_user_activity();
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
 

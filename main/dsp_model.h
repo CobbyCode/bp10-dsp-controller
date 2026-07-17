@@ -44,9 +44,6 @@ typedef struct {
 
     // DRC / Compressor (0x9A) — vollständiger State
     mvs_drc_packed_state_t drc;
-
-    // Metadaten
-    char profile_name[32];
 } dsp_profile_t;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +85,22 @@ esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile);
  */
 esp_err_t dsp_model_readback(dsp_profile_t *profile);
 
+/** Read and validate the complete 106-byte PreEQ state. */
+esp_err_t dsp_model_read_preeq(mvs_preeq_state_t *state);
+
+/** Read and validate the complete 54-byte DRC state. */
+esp_err_t dsp_model_read_drc(mvs_drc_packed_state_t *state);
+
+/** Read and validate Silence Detector 0x89, including its read-only amplitude. */
+esp_err_t dsp_model_read_silence_detector(bool *enabled, uint16_t *amplitude);
+
+/**
+ * @brief Enable-Zustand eines Effekts gezielt lesen.
+ *
+ * Sendet eine Query und wertet den Readback hinter dem 0xFF-Marker aus.
+ */
+esp_err_t dsp_model_read_effect_enabled(uint8_t effect_id, bool *enabled);
+
 /**
  * @brief Noise Suppressor ein-/ausschalten.
  *
@@ -96,6 +109,13 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile);
  */
 esp_err_t dsp_model_set_noise_suppressor(bool enable);
 
+/** Write all editable Noise Suppressor parameters, preserving protocol units. */
+esp_err_t dsp_model_set_noise_suppressor_state(bool enable,
+                                                int16_t threshold_raw,
+                                                uint16_t ratio,
+                                                uint16_t attack_ms,
+                                                uint16_t release_ms);
+
 /**
  * @brief Virtual Bass ein-/ausschalten.
  *
@@ -103,6 +123,9 @@ esp_err_t dsp_model_set_noise_suppressor(bool enable);
  * @return ESP_OK bei Erfolg
  */
 esp_err_t dsp_model_set_virtual_bass(bool enable);
+esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
+                                            uint16_t intensity_pct,
+                                            bool bass_enhanced);
 
 /**
  * @brief Silence Detector ein-/ausschalten.

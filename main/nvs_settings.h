@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 PaulsKlaue
 // SPDX-License-Identifier: MIT
 //
-// nvs_settings.h — NVS-Einstellungen (WiFi, Profile, Gerätename)
+// nvs_settings.h — NVS-Einstellungen (WiFi, DSP-Konfiguration, Gerätename)
 //
 
 #pragma once
@@ -18,7 +18,6 @@ extern "C" {
 #define A800X_WIFI_SSID_MAX_LEN    32
 #define A800X_WIFI_PASS_MAX_LEN    64
 #define A800X_HOSTNAME_MAX_LEN     32
-#define A800X_PROFILE_NAME_MAX_LEN 32
 
 // WiFi-Zugangsdaten
 typedef struct {
@@ -74,43 +73,34 @@ esp_err_t nvs_settings_save_config(const device_config_t *config);
 esp_err_t nvs_settings_load_config(device_config_t *config);
 
 /**
- * @brief DSP-Profil speichern.
+ * @brief DSP-Konfiguration im NVS speichern (wird bei jedem erfolgreichen
+ *        Apply automatisch gespeichert; beim Boot/DSP-Reconnect angewendet).
+ */
+esp_err_t nvs_settings_save_dsp_config(const dsp_profile_t *config);
+
+/**
+ * @brief DSP-Konfiguration aus NVS laden.
  *
- * @param index Profil-Index (0 = active, 1..A800X_MAX_PROFILES)
- * @param profile DSP-Profil
+ * @return ESP_OK wenn Konfiguration vorhanden, ESP_ERR_NOT_FOUND wenn keine
+ *         gespeichert ist.
  */
-esp_err_t nvs_settings_save_profile(uint8_t index, const dsp_profile_t *profile);
+esp_err_t nvs_settings_load_dsp_config(dsp_profile_t *config);
 
 /**
- * @brief DSP-Profil laden.
- *
- * @param index Profil-Index
- * @param[out] profile DSP-Profil
+ * @brief DSP-Konfiguration aus NVS löschen.
  */
-esp_err_t nvs_settings_load_profile(uint8_t index, dsp_profile_t *profile);
+esp_err_t nvs_settings_clear_dsp_config(void);
 
 /**
- * @brief Aktives Profil laden (Alias für Index 0).
+ * @brief Prüft, ob eine DSP-Konfiguration im NVS gespeichert ist.
  */
-esp_err_t nvs_settings_load_active_profile(dsp_profile_t *profile);
-
-/**
- * @brief Aktives Profil speichern.
- */
-esp_err_t nvs_settings_save_active_profile(const dsp_profile_t *profile);
-
-/**
- * @brief Profil-Liste abrufen (Namen der gespeicherten Profile).
- *
- * @param names Array von Namen
- * @param max_count Maximale Anzahl
- * @param[out] count Gefundene Profile
- */
-esp_err_t nvs_settings_list_profiles(char names[][A800X_PROFILE_NAME_MAX_LEN],
-                                     uint8_t max_count, uint8_t *count);
+bool nvs_settings_has_dsp_config(void);
 
 /**
  * @brief Alle Einstellungen löschen (Factory Reset).
+ *
+ * Löscht NVS (WiFi, DSP-Konfiguration, Gerätename).
+ * Sendet KEIN 0xFD an den DSP.
  */
 esp_err_t nvs_settings_factory_reset(void);
 

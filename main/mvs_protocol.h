@@ -168,10 +168,10 @@ esp_err_t mvs_build_preeq_full_frame(const mvs_preeq_state_t *state,
 /**
  * @brief Frame für vollständiges DRC-State-Update erstellen.
  *
- * Erzeugt: A5 5A 9A 37 FF <54 Bytes State> 16
+ * Erzeugt: A5 5A 9A 37 FF <54 Bytes State> 16 (60 Bytes gesamt)
  *
  * @param state DRC-State-Struktur
- * @param buffer Ausgabepuffer (mindestens 58 Byte)
+ * @param buffer Ausgabepuffer (mindestens 60 Byte)
  * @param buf_size Puffergröße
  * @return ESP_OK bei Erfolg
  */

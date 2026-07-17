@@ -36,4 +36,5 @@ idf_component_register(
         driver
         app_update
         esp_driver_gpio
+        esp_timer
 )

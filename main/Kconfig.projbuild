@@ -30,9 +30,16 @@ menu "A800X DSP Controller"
         help
             Wartezeit nach Power-On, bis der DSP gebootet ist.
 
+    config A800X_DIAGNOSTIC_NS_BOOT_TEST
+        bool "Noise-Suppressor-Schalttest beim USB-Connect"
+        default n
+        help
+            Expliziter Diagnosemodus. Schaltet den Noise Suppressor beim
+            Verbinden AUS und wieder EIN. Im normalen Betrieb deaktiviert.
+
     config A800X_WIFI_SETUP_TIMEOUT_S
         int "WiFi Setup Window (seconds)"
-        default 300
+        default 180
         help
             Zeitfenster für WiFi-Setup nach Power-On (0 = unbegrenzt).
 

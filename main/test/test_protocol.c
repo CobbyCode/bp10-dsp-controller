@@ -153,6 +153,21 @@ TEST_CASE("DRC packed state size", "[protocol]")
     TEST_ASSERT_EQUAL(54, sizeof(state));
 }
 
+TEST_CASE("DRC full frame includes terminator", "[protocol]")
+{
+    mvs_drc_packed_state_t state = {0};
+    uint8_t frame[60] = {0};
+
+    TEST_ASSERT_EQUAL(ESP_OK,
+                      mvs_build_drc_full_frame(&state, frame, sizeof(frame)));
+    TEST_ASSERT_EQUAL_HEX8(MVS_FRAME_MAGIC_1, frame[0]);
+    TEST_ASSERT_EQUAL_HEX8(MVS_FRAME_MAGIC_2, frame[1]);
+    TEST_ASSERT_EQUAL_HEX8(MVS_EFFECT_DRC, frame[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x37, frame[3]);
+    TEST_ASSERT_EQUAL_HEX8(0xFF, frame[4]);
+    TEST_ASSERT_EQUAL_HEX8(MVS_FRAME_TERMINATOR, frame[59]);
+}
+
 // ---------------------------------------------------------------------------
 // Frame Validation Tests
 // ---------------------------------------------------------------------------
@@ -206,6 +221,7 @@ void test_protocol_main(void)
     RUN_TEST("Virtual Bass decode", "[protocol]");
     RUN_TEST("PreEQ state size", "[protocol]");
     RUN_TEST("DRC packed state size", "[protocol]");
+    RUN_TEST("DRC full frame includes terminator", "[protocol]");
     RUN_TEST("Frame validation", "[protocol]");
     RUN_TEST("Tag frame building", "[protocol]");
 }

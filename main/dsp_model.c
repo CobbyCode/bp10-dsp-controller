@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_log_buffer.h"
 
 static const char *TAG = "a800x_dsp";
 
@@ -61,7 +62,6 @@ esp_err_t dsp_model_init(void)
 void dsp_model_get_default_profile(dsp_profile_t *profile)
 {
     memset(profile, 0, sizeof(dsp_profile_t));
-    strcpy(profile->profile_name, "default");
 
     // Noise Suppressor: Factory Defaults
     profile->noise_suppressor_enabled = true;
@@ -154,7 +154,7 @@ void dsp_model_get_default_profile(dsp_profile_t *profile)
 esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile)
 {
     if (!profile) return ESP_ERR_INVALID_ARG;
-    ESP_LOGI(TAG, "Wende DSP-Profil an: %s", profile->profile_name);
+    ESP_LOGI(TAG, "Wende DSP-Profil an...");
 
     esp_err_t err;
 
@@ -197,6 +197,8 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
 {
     if (!profile) return ESP_ERR_INVALID_ARG;
 
+    memset(profile, 0, sizeof(*profile));
+
     ESP_LOGI(TAG, "Lese DSP-Zustand aus...");
 
     uint8_t frame[16];
@@ -211,7 +213,7 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
         vTaskDelay(pdMS_TO_TICKS(50));
         err = usb_host_ctrl_get_report(report, &report_len);
         if (err == ESP_OK && report_len >= 16) {
-            mvs_decode_noise_suppressor(report + 4, report_len - 4,
+            mvs_decode_noise_suppressor(report + 5, report_len - 5,
                                         &profile->noise_suppressor_enabled,
                                         &profile->noise_suppressor_threshold_raw,
                                         &profile->noise_suppressor_ratio,
@@ -228,7 +230,7 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
         vTaskDelay(pdMS_TO_TICKS(50));
         err = usb_host_ctrl_get_report(report, &report_len);
         if (err == ESP_OK && report_len >= 10) {
-            mvs_decode_virtual_bass(report + 4, report_len - 4,
+            mvs_decode_virtual_bass(report + 5, report_len - 5,
                                     &profile->virtual_bass_enabled,
                                     &profile->virtual_bass_cutoff_hz,
                                     &profile->virtual_bass_intensity_pct,
@@ -236,33 +238,168 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
         }
     }
 
-    // PreEQ (komplex)
-    mvs_build_query_frame(MVS_EFFECT_PREEQ, frame, sizeof(frame));
-    mvs_prepare_hid_report(frame, 5, report);
-    err = usb_host_ctrl_send_report(report, sizeof(report));
-    if (err == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-        err = usb_host_ctrl_get_report(report, &report_len);
-        if (err == ESP_OK && report_len >= 110) {
-            // Daten nach dem Header: offset 4
-            mvs_decode_preeq(report + 5, report_len - 5, &profile->preeq);
-        }
+    // Silence Detector (0x89, validierter Zustand)
+    uint16_t silence_amplitude = 0;
+    err = dsp_model_read_silence_detector(&profile->silence_detector_enabled,
+                                          &silence_amplitude);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Silence-Readback fehlgeschlagen: %s", esp_err_to_name(err));
     }
 
-    // DRC (komplex)
-    mvs_build_query_frame(MVS_EFFECT_DRC, frame, sizeof(frame));
-    mvs_prepare_hid_report(frame, 5, report);
-    err = usb_host_ctrl_send_report(report, sizeof(report));
-    if (err == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-        err = usb_host_ctrl_get_report(report, &report_len);
-        if (err == ESP_OK && report_len >= 58) {
-            mvs_decode_drc(report + 5, report_len - 5, &profile->drc);
-        }
+    // PreEQ (vollständiger, validierter Zustand)
+    err = dsp_model_read_preeq(&profile->preeq);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "PreEQ-Readback fehlgeschlagen: %s", esp_err_to_name(err));
+    }
+
+    // DRC (vollständiger, validierter Zustand)
+    err = dsp_model_read_drc(&profile->drc);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "DRC-Readback fehlgeschlagen: %s", esp_err_to_name(err));
     }
 
     memcpy(&s_current_profile, profile, sizeof(dsp_profile_t));
     ESP_LOGI(TAG, "DSP-Readback abgeschlossen");
+    return ESP_OK;
+}
+
+esp_err_t dsp_model_read_preeq(mvs_preeq_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    uint8_t frame[5];
+    uint8_t report[256];
+    uint16_t report_len = 0;
+
+    mvs_build_query_frame(MVS_EFFECT_PREEQ, frame, sizeof(frame));
+    ESP_LOGI(TAG, "PreEQ 0x99 TX: A5 5A 99 00 16");
+    mvs_prepare_hid_report(frame, 5, report);
+    esp_err_t err = usb_host_ctrl_send_report(report, sizeof(report));
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    err = usb_host_ctrl_get_report(report, &report_len);
+    if (err != ESP_OK) return err;
+    ESP_LOGI(TAG, "PreEQ 0x99 RX: status=%s len=%u", esp_err_to_name(err), report_len);
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, report, report_len < 112 ? report_len : 112, ESP_LOG_INFO);
+    if (report_len < 112 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 || report[2] != MVS_EFFECT_PREEQ ||
+        report[4] != 0xFF) {
+        ESP_LOGW(TAG, "Ungültiger vollständiger PreEQ-Readback (len=%u)", report_len);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    err = mvs_decode_preeq(report + 5, report_len - 5, state);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "PreEQ: enabled=%u pregain_raw=%d selected=%u",
+                 state->block_enabled, state->pre_gain_raw, state->selected_filter);
+        for (int i = 0; i < 10; ++i) {
+            const mvs_preeq_filter_t *f = &state->filters[i];
+            ESP_LOGI(TAG, "PreEQ F%d: ena=%u type=%u freq=%u gain_raw=%d q_raw=%u",
+                     i, f->enabled, f->type, f->frequency_hz, f->gain_raw, f->q_raw);
+        }
+    }
+    return err;
+}
+
+esp_err_t dsp_model_read_drc(mvs_drc_packed_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    uint8_t frame[5];
+    uint8_t report[256];
+    uint16_t report_len = 0;
+
+    esp_err_t err = mvs_build_query_frame(MVS_EFFECT_DRC, frame, sizeof(frame));
+    if (err != ESP_OK) return err;
+    ESP_LOGI(TAG, "DRC 0x9A TX: A5 5A 9A 00 16");
+    mvs_prepare_hid_report(frame, sizeof(frame), report);
+    err = usb_host_ctrl_send_report(report, sizeof(report));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "DRC 0x9A TX fehlgeschlagen: %s", esp_err_to_name(err));
+        return err;
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+    err = usb_host_ctrl_get_report(report, &report_len);
+    ESP_LOGI(TAG, "DRC 0x9A RX: status=%s len=%u", esp_err_to_name(err), report_len);
+    if (err != ESP_OK) return err;
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, report, report_len < 64 ? report_len : 64, ESP_LOG_INFO);
+    if (report_len < 60 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 || report[2] != MVS_EFFECT_DRC ||
+        report[4] != 0xFF || report[59] != MVS_FRAME_TERMINATOR) {
+        ESP_LOGW(TAG, "DRC 0x9A ungültig (len=%u)", report_len);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    err = mvs_decode_drc(report + 5, report_len - 5, state);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "DRC parsed: enabled=%u mode=%u type=%u q1=%u q2=%u f1=%u f2=%u",
+                 state->enabled, state->mode, state->crossover_type,
+                 state->crossover_q1_raw, state->crossover_q2_raw,
+                 state->crossover_freq1_hz, state->crossover_freq2_hz);
+        for (int i = 0; i < 4; ++i) {
+            ESP_LOGI(TAG, "DRC path%d: threshold=%d ratio=%u attack=%u release=%u pregain=%u",
+                     i, state->thresholds[i], state->ratios[i], state->attacks[i],
+                     state->releases[i], state->pregains[i]);
+        }
+    }
+    return err;
+}
+
+esp_err_t dsp_model_read_silence_detector(bool *enabled, uint16_t *amplitude)
+{
+    if (!enabled || !amplitude) return ESP_ERR_INVALID_ARG;
+    uint8_t frame[5];
+    uint8_t report[256];
+    uint16_t report_len = 0;
+    esp_err_t err = mvs_build_query_frame(MVS_EFFECT_SILENCE_DETECTOR,
+                                           frame, sizeof(frame));
+    if (err != ESP_OK) return err;
+    ESP_LOGI(TAG, "Silence 0x89 TX: A5 5A 89 00 16");
+    mvs_prepare_hid_report(frame, sizeof(frame), report);
+    err = usb_host_ctrl_send_report(report, sizeof(report));
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    err = usb_host_ctrl_get_report(report, &report_len);
+    ESP_LOGI(TAG, "Silence 0x89 RX: status=%s len=%u", esp_err_to_name(err), report_len);
+    if (err != ESP_OK) return err;
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, report, report_len < 10 ? report_len : 10, ESP_LOG_INFO);
+    if (report_len < 10 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 ||
+        report[2] != MVS_EFFECT_SILENCE_DETECTOR || report[4] != 0xFF) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    *enabled = ((uint16_t)report[5] | ((uint16_t)report[6] << 8)) != 0;
+    *amplitude = (uint16_t)report[7] | ((uint16_t)report[8] << 8);
+    ESP_LOGI(TAG, "Silence 0x89 parsed: enabled=%d amplitude=%u",
+             *enabled, *amplitude);
+    return ESP_OK;
+}
+
+esp_err_t dsp_model_read_effect_enabled(uint8_t effect_id, bool *enabled)
+{
+    if (!enabled) return ESP_ERR_INVALID_ARG;
+
+    uint8_t frame[5];
+    uint8_t report[256];
+    uint16_t report_len = 0;
+
+    esp_err_t err = mvs_build_query_frame(effect_id, frame, sizeof(frame));
+    if (err != ESP_OK) return err;
+
+    mvs_prepare_hid_report(frame, sizeof(frame), report);
+    err = usb_host_ctrl_send_report(report, sizeof(report));
+    if (err != ESP_OK) return err;
+
+    vTaskDelay(pdMS_TO_TICKS(100));
+    err = usb_host_ctrl_get_report(report, &report_len);
+    if (err != ESP_OK) return err;
+
+    if (report_len < 7 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 || report[2] != effect_id ||
+        report[4] != 0xFF) {
+        ESP_LOGW(TAG, "Ungültiger Readback für Effekt 0x%02X (len=%u)",
+                 effect_id, report_len);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    *enabled = ((uint16_t)report[5] | ((uint16_t)report[6] << 8)) != 0;
     return ESP_OK;
 }
 
@@ -274,7 +411,35 @@ esp_err_t dsp_model_set_noise_suppressor(bool enable)
                                           MVS_SEL_BLOCK_ENABLE,
                                           enable ? 1 : 0, frame, sizeof(frame));
     if (err != ESP_OK) return err;
-    return send_mvs_command(frame, 7);
+    return send_mvs_command(frame, 8);
+}
+
+esp_err_t dsp_model_set_noise_suppressor_state(bool enable,
+                                                int16_t threshold_raw,
+                                                uint16_t ratio,
+                                                uint16_t attack_ms,
+                                                uint16_t release_ms)
+{
+    const uint16_t values[] = {
+        enable ? 1U : 0U,
+        (uint16_t)threshold_raw,
+        ratio,
+        attack_ms,
+        release_ms,
+    };
+
+    for (uint8_t selector = MVS_SEL_BLOCK_ENABLE;
+         selector <= MVS_SEL_PARAM_4; selector++) {
+        uint8_t frame[8];
+        esp_err_t err = mvs_build_write_frame(MVS_EFFECT_NOISE_SUPPRESSOR,
+                                              selector, values[selector],
+                                              frame, sizeof(frame));
+        if (err != ESP_OK) return err;
+        err = send_mvs_command(frame, sizeof(frame));
+        if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return ESP_OK;
 }
 
 esp_err_t dsp_model_set_virtual_bass(bool enable)
@@ -285,7 +450,27 @@ esp_err_t dsp_model_set_virtual_bass(bool enable)
                                           MVS_SEL_BLOCK_ENABLE,
                                           enable ? 1 : 0, frame, sizeof(frame));
     if (err != ESP_OK) return err;
-    return send_mvs_command(frame, 7);
+    return send_mvs_command(frame, 8);
+}
+
+esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
+                                            uint16_t intensity_pct,
+                                            bool bass_enhanced)
+{
+    const uint16_t values[] = { enable ? 1U : 0U, cutoff_hz,
+                                intensity_pct, bass_enhanced ? 1U : 0U };
+    for (uint8_t selector = MVS_SEL_BLOCK_ENABLE;
+         selector <= MVS_SEL_PARAM_3; selector++) {
+        uint8_t frame[8];
+        esp_err_t err = mvs_build_write_frame(MVS_EFFECT_VIRTUAL_BASS,
+                                              selector, values[selector],
+                                              frame, sizeof(frame));
+        if (err != ESP_OK) return err;
+        err = send_mvs_command(frame, sizeof(frame));
+        if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return ESP_OK;
 }
 
 esp_err_t dsp_model_set_silence_detector(bool enable)
@@ -296,7 +481,7 @@ esp_err_t dsp_model_set_silence_detector(bool enable)
                                           MVS_SEL_BLOCK_ENABLE,
                                           enable ? 1 : 0, frame, sizeof(frame));
     if (err != ESP_OK) return err;
-    return send_mvs_command(frame, 7);
+    return send_mvs_command(frame, 8);
 }
 
 esp_err_t dsp_model_set_preeq_enable(bool enable)
@@ -307,7 +492,7 @@ esp_err_t dsp_model_set_preeq_enable(bool enable)
                                           MVS_SEL_BLOCK_ENABLE,
                                           enable ? 1 : 0, frame, sizeof(frame));
     if (err != ESP_OK) return err;
-    return send_mvs_command(frame, 7);
+    return send_mvs_command(frame, 8);
 }
 
 esp_err_t dsp_model_set_drc_enable(bool enable)
@@ -318,7 +503,7 @@ esp_err_t dsp_model_set_drc_enable(bool enable)
                                           MVS_SEL_BLOCK_ENABLE,
                                           enable ? 1 : 0, frame, sizeof(frame));
     if (err != ESP_OK) return err;
-    return send_mvs_command(frame, 7);
+    return send_mvs_command(frame, 8);
 }
 
 esp_err_t dsp_model_update_preeq(const mvs_preeq_state_t *state)
@@ -329,7 +514,7 @@ esp_err_t dsp_model_update_preeq(const mvs_preeq_state_t *state)
     uint8_t frame[128];
     esp_err_t err = mvs_build_preeq_full_frame(state, frame, sizeof(frame));
     if (err != ESP_OK) return err;
-    return send_mvs_command(frame, 111);
+    return send_mvs_command(frame, 112);
 }
 
 esp_err_t dsp_model_update_drc(const mvs_drc_packed_state_t *state)
@@ -340,5 +525,5 @@ esp_err_t dsp_model_update_drc(const mvs_drc_packed_state_t *state)
     uint8_t frame[64];
     esp_err_t err = mvs_build_drc_full_frame(state, frame, sizeof(frame));
     if (err != ESP_OK) return err;
-    return send_mvs_command(frame, 59);
+    return send_mvs_command(frame, 60);
 }

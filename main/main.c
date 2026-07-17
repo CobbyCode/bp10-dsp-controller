@@ -7,11 +7,16 @@
 // 1. NVS
 // 2. USB-Host starten (nicht blockierend)
 // 3. Netzwerk: WiFi + mDNS + HTTP-Server
-// 4. DSP-Init: optional, nur wenn USB-Device erkannt
-// 5. Normalbetrieb: Web-UI, Noise-Suppressor-Test, OTA, Config-IO
+// 4. DSP-Zustand beim Connect:
+//    - Gespeicherte DSP-Konfiguration aus NVS laden & anwenden
+//    - Jedes Modul per Readback bestätigen
+//    - Ohne gespeicherte Konfiguration: nur aktuellen Zustand lesen
+// 5. Normalbetrieb: Web-UI, OTA, Config-IO
 //
 // Wichtig: Das System startet auch ohne angeschlossenen A800X.
 // Die Web-UI zeigt dann "DSP nicht verfügbar".
+//
+// Niemals DSP-Flash-Save 0xFD verwenden!
 //
 
 #include <stdio.h>
@@ -44,8 +49,11 @@ static void init_nvs(void);
 static void init_usb_host(void);
 static void init_network(void);
 static void init_http_server(void);
-static void apply_dsp_profile(void);
+static void dsp_boot_apply_task(void *arg);
+static void dsp_boot_readonly_task(void *arg);
+#if CONFIG_A800X_DIAGNOSTIC_NS_BOOT_TEST
 static void dsp_test_task(void *arg);
+#endif
 
 void app_main(void)
 {
@@ -63,20 +71,10 @@ void app_main(void)
     init_network();
     init_http_server();
 
-    // 4. DSP-Profil anwenden (nur wenn Device erkannt)
+    // 4. Falls bereits verbunden: gespeicherte Konfiguration anwenden
+    //    oder nur lesen, falls keine gespeichert ist.
     if (g_dsp_connected) {
-        apply_dsp_profile();
-
-        // 5. DSP-Test-Task starten (Noise Suppressor Read/Write-Zyklus)
-        xTaskCreatePinnedToCore(
-            dsp_test_task,
-            "dsp_test",
-            4096,
-            NULL,
-            3,
-            NULL,
-            1  // Core 1
-        );
+        dsp_boot_apply_task(NULL);
     }
 
     ESP_LOGI(TAG, "Initialisierung abgeschlossen.");
@@ -85,8 +83,22 @@ void app_main(void)
     // Normalbetrieb: Status-Loop
     while (1) {
         // DSP-Connected-Status aktualisieren (für API)
+        bool was_connected = g_dsp_connected;
         g_dsp_connected = usb_host_ctrl_is_device_connected();
-        vTaskDelay(pdMS_TO_TICKS(5000));
+
+        // Bei späterer Verbindung (Hot-Plug/Reconnect):
+        // gleicher Ablauf wie beim Boot – Konfiguration anwenden oder nur lesen.
+        if (g_dsp_connected && !was_connected) {
+            ESP_LOGI(TAG, "DSP-Gerät neu verbunden – Konfiguration wiederherstellen...");
+            dsp_boot_apply_task(NULL);
+        }
+
+        // Bei Trennung: Status vermerken
+        if (!g_dsp_connected && was_connected) {
+            ESP_LOGI(TAG, "DSP-Gerät getrennt – warte auf Wiederverbindung.");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
 
@@ -110,12 +122,12 @@ static void init_nvs(void)
 // ---------------------------------------------------------------------------
 static void init_usb_host(void)
 {
-    ESP_LOGI(TAG, "USB-Host initialisieren...");
+    ESP_LOGI(TAG, "USB-Host initialisieren (dauerhaft, kein Timeout)...");
 
     // VBUS einschalten (falls konfiguriert)
     usb_host_vbus_enable(true);
 
-    // USB-Host initialisieren
+    // USB-Host initialisieren (nicht blockierend)
     esp_err_t err = usb_host_ctrl_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "USB-Host-Init fehlgeschlagen: %s", esp_err_to_name(err));
@@ -123,43 +135,190 @@ static void init_usb_host(void)
         return;
     }
 
-    // Auf DSP-Device warten (Timeout via Kconfig)
-    err = usb_host_ctrl_wait_for_device(A800X_USB_VID, A800X_USB_PID,
-                                        A800X_USB_DEVICE_WAIT_MS);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "MVSilicon-Gerät nicht gefunden. System läuft ohne DSP.");
-        g_dsp_connected = false;
-        return;
-    }
+    // Nicht blockierend: Client-Task läuft dauerhaft im Hintergrund
+    // und meldet Devices via Callback. Haupt-Loop erkennt später
+    // verbundene Geräte asynchron.
+    ESP_LOGI(TAG, "USB-Host läuft dauerhaft (Client-Task aktiv).");
 
-    g_dsp_connected = true;
-    ESP_LOGI(TAG, "MVSilicon-Gerät VID:0x%04X PID:0x%04X erkannt",
-             A800X_USB_VID, A800X_USB_PID);
+    // Kurzer Check ob bereits ein Device angeschlossen ist
+    if (usb_host_ctrl_is_device_connected()) {
+        g_dsp_connected = true;
+        ESP_LOGI(TAG, "MVSilicon-Gerät bereits verbunden (Callback-Benachrichtigung).");
+    } else {
+        ESP_LOGI(TAG, "Kein Device beim Start – USB-Host wartet auf Hot-Plug.");
+    }
 }
 
 // ---------------------------------------------------------------------------
-// DSP-Profil anwenden (nur bei verbundenem Device)
+// Boot / Hot-Plug: Gespeicherte DSP-Konfiguration anwenden oder nur lesen.
+//
+// Ablauf:
+//   1. NVS-Konfiguration laden
+//   2. Falls vorhanden: vollständig auf DSP anwenden
+//   3. Jedes Modul per Readback bestätigen
+//   4. Nur bestätigte Werte als aktiv übernehmen
+//   5. Bei Teilfehlern pro Modul melden, Rest bleibt gültig
+//   6. Falls keine Config: DSP nur lesen, NICHT automatisch speichern
+//
+// Kein DSP-Flash-Save 0xFD!
 // ---------------------------------------------------------------------------
-static void apply_dsp_profile(void)
-{
-    ESP_LOGI(TAG, "DSP-Profil wiederherstellen...");
 
-    dsp_profile_t profile;
-    esp_err_t err = nvs_settings_load_active_profile(&profile);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Kein gespeichertes Profil, Standard verwenden");
-        dsp_model_get_default_profile(&profile);
+static void confirm_and_log_module(const char *name, bool ok)
+{
+    if (ok) {
+        ESP_LOGI(TAG, "  ✅ %s bestätigt", name);
+    } else {
+        ESP_LOGW(TAG, "  ⚠️ %s Readback-Fehler – Modul wurde möglicherweise "
+                       "nicht übernommen", name);
+    }
+}
+
+/**
+ * @brief DSP-Konfiguration anwenden oder nur lesen (Boot/Reconnect).
+ *
+ * Wird sowohl beim initialen Boot als auch bei Hot-Plug/Reconnect aufgerufen.
+ * Läuft inline (kein separater Task), da der Aufrufer bereits im Main-Loop-
+ * Kontext blockieren kann.
+ */
+static void dsp_boot_apply_task(void *arg)
+{
+    (void)arg;
+
+    if (!g_dsp_connected) {
+        ESP_LOGW(TAG, "dsp_boot_apply: DSP nicht verbunden – Abbruch");
+        return;
     }
 
-    err = dsp_model_apply_profile(&profile);
+    // Kurze Wartezeit für USB-Stabilität nach Hot-Plug
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Prüfen ob eine gespeicherte Konfiguration existiert
+    if (!nvs_settings_has_dsp_config()) {
+        ESP_LOGI(TAG, "Keine gespeicherte DSP-Konfiguration – "
+                       "lese aktuellen Zustand (nur Readback, kein Save)");
+        dsp_boot_readonly_task(NULL);
+        return;
+    }
+
+    // --- Gespeicherte Konfiguration laden ---
+    dsp_profile_t saved;
+    esp_err_t err = nvs_settings_load_dsp_config(&saved);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS-Konfiguration laden fehlgeschlagen: %s – "
+                       "falle zurück auf Readback", esp_err_to_name(err));
+        dsp_boot_readonly_task(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Gespeicherte DSP-Konfiguration geladen – wende an...");
+
+    // --- Vollständig auf DSP anwenden ---
+    err = dsp_model_apply_profile(&saved);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Profil anwenden fehlgeschlagen: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "DSP-Profil angewendet");
+        return;
     }
 
-    // Wichtig: KEIN 0xFD Flash-Save senden!
-    ESP_LOGI(TAG, "Hinweis: Kein DSP-Flash-Save (0xFD) — ESP stellt Parameter nach jedem Einschalten wieder her.");
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // --- Jedes Modul per Readback bestätigen ---
+    ESP_LOGI(TAG, "Readback-Bestätigung aller Module:");
+    int ok_count = 0;
+    int fail_count = 0;
+
+    // Noise Suppressor
+    dsp_profile_t readback;
+    err = dsp_model_readback(&readback);
+    if (err == ESP_OK) {
+        bool ns_ok = (readback.noise_suppressor_enabled == saved.noise_suppressor_enabled);
+        confirm_and_log_module("Noise Suppressor", ns_ok);
+        if (ns_ok) ok_count++; else fail_count++;
+        g_dsp_ns_state = readback.noise_suppressor_enabled;
+    } else {
+        ESP_LOGW(TAG, "  ⚠️ Vollständiger Readback fehlgeschlagen – "
+                       "Einzel-Modul-Checks folgen");
+    }
+
+    // Virtual Bass (separater Readback falls Voll-Readback fehlschlug)
+    {
+        dsp_profile_t vb_check;
+        err = dsp_model_readback(&vb_check);
+        if (err == ESP_OK) {
+            bool vb_ok = (vb_check.virtual_bass_enabled == saved.virtual_bass_enabled);
+            confirm_and_log_module("Virtual Bass", vb_ok);
+            if (vb_ok) ok_count++; else fail_count++;
+        } else {
+            confirm_and_log_module("Virtual Bass", false);
+            fail_count++;
+        }
+    }
+
+    // Silence Detector
+    {
+        bool sd_enabled = false;
+        uint16_t sd_amplitude = 0;
+        err = dsp_model_read_silence_detector(&sd_enabled, &sd_amplitude);
+        bool sd_ok = (err == ESP_OK) && (sd_enabled == saved.silence_detector_enabled);
+        confirm_and_log_module("Silence Detector", sd_ok);
+        if (sd_ok) ok_count++; else fail_count++;
+    }
+
+    // PreEQ
+    {
+        mvs_preeq_state_t peq_state;
+        err = dsp_model_read_preeq(&peq_state);
+        bool peq_ok = (err == ESP_OK) &&
+                      (memcmp(&peq_state, &saved.preeq, sizeof(peq_state)) == 0);
+        confirm_and_log_module("PreEQ", peq_ok);
+        if (peq_ok) ok_count++; else fail_count++;
+    }
+
+    // DRC
+    {
+        mvs_drc_packed_state_t drc_state;
+        err = dsp_model_read_drc(&drc_state);
+        bool drc_ok = (err == ESP_OK) &&
+                      (memcmp(&drc_state, &saved.drc, sizeof(drc_state)) == 0);
+        confirm_and_log_module("DRC", drc_ok);
+        if (drc_ok) ok_count++; else fail_count++;
+    }
+
+    ESP_LOGI(TAG, "Boot-Apply abgeschlossen: %d/%d Module bestätigt%s",
+             ok_count, ok_count + fail_count,
+             fail_count > 0 ? " (Teilfehler – nicht bestätigte Werte werden "
+                              "nicht erneut geschrieben)" : "");
+
+#if CONFIG_A800X_DIAGNOSTIC_NS_BOOT_TEST
+    ESP_LOGW(TAG, "Diagnosemodus: Noise-Suppressor-Boot-Test wird gestartet");
+    xTaskCreatePinnedToCore(dsp_test_task, "dsp_test", 4096, NULL, 3, NULL, 1);
+#endif
+}
+
+/**
+ * @brief DSP nur lesen, nichts verändern, nicht speichern.
+ *
+ * Wird verwendet wenn keine gespeicherte Konfiguration existiert.
+ */
+static void dsp_boot_readonly_task(void *arg)
+{
+    (void)arg;
+
+    if (!g_dsp_connected) return;
+
+    dsp_profile_t profile;
+    esp_err_t err = dsp_model_readback(&profile);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Readback (readonly) fehlgeschlagen: %s", esp_err_to_name(err));
+        return;
+    }
+
+    g_dsp_ns_state = profile.noise_suppressor_enabled;
+    ESP_LOGI(TAG, "DSP-Zustand gelesen (kein Auto-Save): Noise Suppressor=%s, "
+                   "Virtual Bass=%s, PreEQ=%s, DRC=%s",
+             profile.noise_suppressor_enabled ? "EIN" : "AUS",
+             profile.virtual_bass_enabled ? "EIN" : "AUS",
+             profile.preeq.block_enabled ? "EIN" : "AUS",
+             profile.drc.enabled ? "EIN" : "AUS");
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +332,7 @@ static void apply_dsp_profile(void)
 // 5. Erneut lesen → bestätigen
 // 6. Globalen Status aktualisieren
 // ---------------------------------------------------------------------------
+#if CONFIG_A800X_DIAGNOSTIC_NS_BOOT_TEST
 static void dsp_test_task(void *arg)
 {
     ESP_LOGI(TAG, "DSP-Test-Task gestartet");
@@ -206,7 +366,7 @@ static void dsp_test_task(void *arg)
     bool ns_enabled;
     int16_t ns_threshold;
     uint16_t ns_ratio, ns_attack, ns_release;
-    err = mvs_decode_noise_suppressor(report + 4, report_len - 4,
+    err = mvs_decode_noise_suppressor(report + 5, report_len - 5,
                                        &ns_enabled, &ns_threshold,
                                        &ns_ratio, &ns_attack, &ns_release);
     if (err == ESP_OK) {
@@ -237,7 +397,7 @@ static void dsp_test_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
         err = usb_host_ctrl_get_report(report, &report_len);
         if (err == ESP_OK && report_len >= 14) {
-            mvs_decode_noise_suppressor(report + 4, report_len - 4,
+            mvs_decode_noise_suppressor(report + 5, report_len - 5,
                                          &ns_enabled, NULL, NULL, NULL, NULL);
             if (!ns_enabled) {
                 ESP_LOGI(TAG, "✅ BESTÄTIGT: Noise Suppressor ist AUS");
@@ -267,7 +427,7 @@ static void dsp_test_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
         err = usb_host_ctrl_get_report(report, &report_len);
         if (err == ESP_OK && report_len >= 14) {
-            mvs_decode_noise_suppressor(report + 4, report_len - 4,
+            mvs_decode_noise_suppressor(report + 5, report_len - 5,
                                          &ns_enabled, NULL, NULL, NULL, NULL);
             if (ns_enabled) {
                 ESP_LOGI(TAG, "✅ BESTÄTIGT: Noise Suppressor ist EIN");
@@ -284,6 +444,7 @@ test_end:
     ESP_LOGI(TAG, "DSP-Test-Task beendet. Noise Suppressor State: %d", g_dsp_ns_state);
     vTaskDelete(NULL);
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // Netzwerk
@@ -306,12 +467,32 @@ static void init_network(void)
     // Gespeicherte WiFi-Zugangsdaten laden
     wifi_creds_t creds;
     esp_err_t err = nvs_settings_load_wifi_creds(&creds);
+    bool have_creds = err == ESP_OK && creds.ssid[0] != '\0';
 
-    if (err == ESP_OK && creds.ssid[0] != '\0') {
-        ESP_LOGI(TAG, "Gespeicherte WLAN-Zugangsdaten gefunden, verbinde...");
+    // Credential-Status im WiFi-Manager setzen (für Lifecycle)
+    wifi_manager_set_has_credentials(have_creds);
+
+    device_config_t device_config = {
+        .wifi_auto_off = false,
+        .wifi_setup_timeout_s = A800X_WIFI_SETUP_TIMEOUT_S,
+    };
+    if (nvs_settings_load_config(&device_config) != ESP_OK) {
+        device_config.wifi_auto_off = false;
+        device_config.wifi_setup_timeout_s = A800X_WIFI_SETUP_TIMEOUT_S;
+    }
+    wifi_manager_configure_auto_off(device_config.wifi_auto_off,
+                                    device_config.wifi_setup_timeout_s,
+                                    have_creds);
+
+    if (have_creds) {
+        // Normaler Boot mit Creds: direkt STA-only, kein AP.
+        // AP erscheint nur im Fallback nach 60 s ohne Verbindung.
+        ESP_LOGI(TAG, "Gespeicherte WLAN-Zugangsdaten — STA-only Boot, "
+                 "verbinde mit %s", creds.ssid);
         wifi_manager_connect_sta(creds.ssid, creds.password);
     } else {
-        ESP_LOGI(TAG, "Keine WLAN-Zugangsdaten — SoftAP-Modus starten");
+        // Ohne Creds: AP dauerhaft, bis eine Verbindung eingerichtet wird
+        ESP_LOGI(TAG, "Keine WLAN-Zugangsdaten — SoftAP (dauerhaft)");
         wifi_manager_start_softap(hostname);
     }
 

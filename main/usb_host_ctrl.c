@@ -23,6 +23,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_log_buffer.h"
 #include "esp_err.h"
 #include "usb/usb_host.h"
 #include "usb/usb_types_ch9.h"
@@ -113,30 +114,81 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
                 break;
             }
 
-            // Geräte-Info auslesen
+            // Device-Descriptor lesen (VID/PID)
+            const usb_device_desc_t *dev_desc = NULL;
+            err = usb_host_get_device_descriptor(s_device_handle, &dev_desc);
+            if (err == ESP_OK && dev_desc) {
+                ESP_LOGI(TAG, "USB-EVENT: NEUES DEVICE an Adresse %d",
+                         event_msg->new_dev.address);
+                ESP_LOGI(TAG, "  VID:0x%04X  PID:0x%04X  bcdUSB:0x%04X  Klasse:%d",
+                         dev_desc->idVendor, dev_desc->idProduct,
+                         dev_desc->bcdUSB, dev_desc->bDeviceClass);
+                ESP_LOGI(TAG, "  Hersteller:0x%04X  Produkt:0x%04X  MaxPkt:%d",
+                         dev_desc->idVendor, dev_desc->idProduct,
+                         dev_desc->bMaxPacketSize0);
+
+                if (dev_desc->idVendor == A800X_USB_VID &&
+                    dev_desc->idProduct == A800X_USB_PID) {
+                    ESP_LOGI(TAG, "✅ A800X DSP ERKANNT (VID:0x%04X PID:0x%04X)",
+                             A800X_USB_VID, A800X_USB_PID);
+                } else {
+                    ESP_LOGW(TAG, "⚠️ Fremdgerät: VID:0x%04X PID:0x%04X (warte auf A800X 0x%04X:0x%04X)",
+                             dev_desc->idVendor, dev_desc->idProduct,
+                             A800X_USB_VID, A800X_USB_PID);
+                }
+            } else {
+                ESP_LOGW(TAG, "USB-EVENT: Device an Adresse %d – Descriptor nicht lesbar",
+                         event_msg->new_dev.address);
+            }
+
+            // Geräte-Info (Speed, MaxPacket)
             usb_device_info_t dev_info;
             err = usb_host_device_info(s_device_handle, &dev_info);
             if (err == ESP_OK) {
-                ESP_LOGI(TAG, "Device: addr=%d speed=%d MPS=%d",
-                         dev_info.dev_addr, dev_info.speed, dev_info.bMaxPacketSize0);
+                ESP_LOGI(TAG, "  Speed:%s  MPS:%d  Config:%d",
+                         dev_info.speed == USB_SPEED_LOW ? "Low" :
+                         dev_info.speed == USB_SPEED_FULL ? "Full" :
+                         dev_info.speed == USB_SPEED_HIGH ? "High" : "?",
+                         dev_info.bMaxPacketSize0, dev_info.bConfigurationValue);
+            }
+
+            // Config-Descriptor dump (HID-Report-Deskriptor)
+            const usb_config_desc_t *config_desc = NULL;
+            err = usb_host_get_active_config_descriptor(s_device_handle, &config_desc);
+            if (err == ESP_OK && config_desc) {
+                ESP_LOGI(TAG, "  Config: %u Interface(s), wTotalLength=%u Bytes",
+                         config_desc->bNumInterfaces, config_desc->wTotalLength);
+                // Rohen Descriptor dumpen
+                uint16_t dump_len = config_desc->wTotalLength < 128 ? config_desc->wTotalLength : 128;
+                ESP_LOGI(TAG, "  ConfigDesc (%d bytes):", dump_len);
+                ESP_LOG_BUFFER_HEX_LEVEL(TAG, config_desc, dump_len, ESP_LOG_INFO);
+            } else {
+                ESP_LOGW(TAG, "  Config-Descriptor nicht lesbar: %s", esp_err_to_name(err));
             }
 
             s_device_connected = true;
+            ESP_LOGI(TAG, "USB-Gerät sauber enumeriert; ein vorheriges 'Root port reset failed' ist nicht blockierend");
             if (s_events) {
                 xEventGroupSetBits(s_events, EVENT_DEVICE_CONNECTED);
             }
-            ESP_LOGI(TAG, "MVSilicon-Gerät bereit (VID:0x%04X PID:0x%04X)",
-                     A800X_USB_VID, A800X_USB_PID);
             break;
         }
 
         case USB_HOST_CLIENT_EVENT_DEV_GONE:
-            ESP_LOGI(TAG, "USB-Gerät getrennt");
+            ESP_LOGW(TAG, "USB-EVENT: DEVICE GONE – Gerät getrennt/abgesteckt");
             s_device_handle = NULL;
             s_device_connected = false;
             if (s_events) {
                 xEventGroupSetBits(s_events, EVENT_DEVICE_DISCONNECTED);
             }
+            break;
+
+        case USB_HOST_CLIENT_EVENT_DEV_SUSPENDED:
+            ESP_LOGI(TAG, "USB-EVENT: DEVICE SUSPENDED");
+            break;
+
+        case USB_HOST_CLIENT_EVENT_DEV_RESUMED:
+            ESP_LOGI(TAG, "USB-EVENT: DEVICE RESUMED");
             break;
 
         default:
@@ -171,6 +223,36 @@ static void usb_host_client_task(void *arg)
 }
 
 // ---------------------------------------------------------------------------
+// Library-Event-Task (verarbeitet Bus-Events wie Device-Erkennung)
+// ---------------------------------------------------------------------------
+static void usb_host_lib_task(void *arg)
+{
+    ESP_LOGI(TAG, "USB-Host-Library-Task gestartet (verarbeitet Bus-Events)");
+
+    while (1) {
+        uint32_t event_flags = 0;
+        esp_err_t err = usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Library-Event-Fehler: %s", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
+            ESP_LOGI(TAG, "LIB-EVENT: NO_CLIENTS");
+        }
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
+            ESP_LOGI(TAG, "LIB-EVENT: ALL_FREE");
+        }
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_AUTO_SUSPEND) {
+            ESP_LOGD(TAG, "LIB-EVENT: AUTO_SUSPEND");
+        }
+    }
+
+    vTaskDelete(NULL);
+}
+
+// ---------------------------------------------------------------------------
 // Öffentliche API
 // ---------------------------------------------------------------------------
 
@@ -200,6 +282,7 @@ esp_err_t usb_host_ctrl_init(void)
     usb_host_config_t host_config = {
         .skip_phy_setup = false,
         .intr_flags = ESP_INTR_FLAG_LEVEL1,
+        .peripheral_map = BIT0,
     };
     esp_err_t err = usb_host_install(&host_config);
     if (err != ESP_OK) {
@@ -210,6 +293,19 @@ esp_err_t usb_host_ctrl_init(void)
         s_events = NULL;
         return err;
     }
+
+    ESP_LOGI(TAG, "USB-Host-Treiber installiert (peripheral_map=0x%x)", BIT0);
+
+    // Library-Event-Task starten (MUSS Bus-Events verarbeiten!)
+    xTaskCreatePinnedToCore(
+        usb_host_lib_task,
+        "usb_lib",
+        A800X_USB_HOST_TASK_STACK_SIZE,
+        NULL,
+        A800X_USB_HOST_TASK_PRIORITY,
+        NULL,
+        0
+    );
 
     // Client-Task starten (Core 0 für USB)
     xTaskCreatePinnedToCore(
@@ -306,6 +402,9 @@ static esp_err_t submit_control_transfer(
         uint16_t copy_len = (out_len < 256) ? out_len : 256;
         memset(xfer->data_buffer + 8, 0, 256);
         memcpy(xfer->data_buffer + 8, out_data, copy_len);
+        ESP_LOGD(TAG, "TX Hex: %02x %02x %02x %02x %02x %02x %02x %02x...",
+                 out_data[0], out_data[1], out_data[2], out_data[3],
+                 out_data[4], out_data[5], out_data[6], out_data[7]);
     } else {
         memset(xfer->data_buffer + 8, 0, 256);
     }
@@ -345,6 +444,12 @@ static esp_err_t submit_control_transfer(
         if (resp_len > in_buf_size) resp_len = in_buf_size;
         memcpy(in_buffer, xfer->data_buffer + 8, resp_len);
         if (in_len) *in_len = resp_len;
+        ESP_LOGD(TAG, "RX aktual=%d resp=%d Hex: %02x %02x %02x %02x %02x %02x %02x %02x...",
+                 s_xfer_actual, resp_len,
+                 xfer->data_buffer[8], xfer->data_buffer[9],
+                 xfer->data_buffer[10], xfer->data_buffer[11],
+                 xfer->data_buffer[12], xfer->data_buffer[13],
+                 xfer->data_buffer[14], xfer->data_buffer[15]);
     } else if (in_len) {
         *in_len = 0;
     }
@@ -356,13 +461,9 @@ static esp_err_t submit_control_transfer(
 esp_err_t usb_host_ctrl_send_report(const uint8_t *data, uint16_t length)
 {
     // HID SET_REPORT: Host-to-Device, Class, Interface
-    // bmRequestType: 0x21
-    // bRequest: 0x09 (SET_REPORT)
-    // wValue: 0x0200 (Report Type = Output, Report ID = 0)
-    // wIndex: 0x0000 (Interface 0)
-    // wLength: 256
+    // Output Report (0x0200), Report ID 0.
 
-    ESP_LOGD(TAG, "HID SET_REPORT (%d Bytes Nutzdaten)", length);
+    ESP_LOGD(TAG, "HID SET_REPORT Output Report (%d Bytes Nutzdaten)", length);
 
     return submit_control_transfer(
         0x21,       // bmRequestType: Host-to-Device, Class, Interface

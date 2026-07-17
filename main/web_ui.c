@@ -6,9 +6,6 @@
 
 #include "web_ui.h"
 #include <string.h>
-#include "esp_log.h"
-
-static const char *TAG = "a800x_webui";
 
 // Die eingebetteten Dateien werden durch CMake EMBED_FILES als
 // Symbole bereitgestellt. Deklaration in http_server.c.

@@ -6,6 +6,14 @@
 // Vollständige Implementierung des WiFi-Managers für den A800X DSP Controller.
 // Unterstützt SoftAP (erstes Setup) und Station-Modus (Heim-WLAN).
 //
+// Lifecycle:
+//   BOOTING → AP_ONLY (keine Creds) oder AP_STA_CONNECTING (mit Creds)
+//   AP_STA_CONNECTING → CONNECTED_AP_TRANSITION (STA+IP erhalten)
+//   CONNECTED_AP_TRANSITION → CONNECTED_STA_ONLY (30 s AP-Shutdown-Timer)
+//   CONNECTED_STA_ONLY → DISCONNECTED_RETRYING (Disconnect, 60 s Fallback)
+//   DISCONNECTED_RETRYING → CONNECTED_AP_TRANSITION (reconnected) oder FALLBACK_AP (60 s abgelaufen)
+//   FALLBACK_AP → CONNECTED_AP_TRANSITION (reconnected)
+//
 
 #include "wifi_manager.h"
 #include "nvs_settings.h"
@@ -14,7 +22,11 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
+#include "freertos/timers.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_mac.h"
@@ -35,6 +47,14 @@ static const char *TAG = "a800x_wifi";
 #define WIFI_AP_STARTED_BIT      BIT2
 
 // ---------------------------------------------------------------------------
+// Timing-Konstanten
+// ---------------------------------------------------------------------------
+#define WIFI_USER_IDLE_TIMEOUT_S      1800   // Auto-Off bei Inaktivität
+#define WIFI_AP_SHUTDOWN_DELAY_S      30     // AP nach erfolgreicher STA-Verbindung
+#define WIFI_FALLBACK_RETRY_WINDOW_S  60     // Neuverbindungsversuche bevor AP wieder an
+#define WIFI_STA_RECONNECT_INTERVAL_S 5      // Pause zwischen Reconnect-Versuchen
+
+// ---------------------------------------------------------------------------
 // Interner Zustand
 // ---------------------------------------------------------------------------
 static EventGroupHandle_t s_wifi_event_group = NULL;
@@ -44,12 +64,208 @@ static bool s_sta_connected = false;
 static char s_ip_str[16] = {0};
 static char s_mac_str[18] = {0};
 static char s_hostname[32] = {0};
+static char s_sta_ssid[33] = {0};
+static wifi_lifecycle_state_t s_lifecycle_state = WIFI_LIFECYCLE_BOOTING;
 
 static wifi_connected_cb_t    s_connected_cb = NULL;
 static wifi_disconnected_cb_t s_disconnected_cb = NULL;
 
 static int s_retry_count = 0;
 static int s_max_retry = 5;
+static bool s_auto_off_enabled = false;
+static bool s_credentials_available = false;
+static int64_t s_auto_off_deadline_us = 0;
+static bool s_auto_off_task_started = false;
+static SemaphoreHandle_t s_state_lock = NULL;
+static wifi_manager_scan_state_t s_scan_state = WIFI_MANAGER_SCAN_IDLE;
+static wifi_manager_scan_result_t s_scan_results[WIFI_MANAGER_SCAN_MAX_RESULTS];
+static size_t s_scan_count = 0;
+static esp_err_t s_scan_error = ESP_OK;
+static char s_connection_state[16] = "idle";
+static char s_connection_message[80] = "Not connected";
+
+// Neue Timer für AP-Shutdown und Fallback
+static int64_t s_ap_shutdown_deadline_us = 0;   // 0 = kein Timer aktiv
+static int64_t s_fallback_deadline_us = 0;       // 0 = kein Timer aktiv
+static int64_t s_last_reconnect_attempt_us = 0;
+static bool s_ap_start_requested = false;        // AP-Start durch Fallback anfordern
+static bool s_wifi_started = false;              // ob esp_wifi_start() bereits lief
+
+// ---------------------------------------------------------------------------
+// Forward declarations
+// ---------------------------------------------------------------------------
+static void start_ap_shutdown_timer(void);
+static void cancel_ap_shutdown_timer(void);
+static void start_fallback_timer(void);
+static void cancel_fallback_timer(void);
+static void lifecycle_set_state(wifi_lifecycle_state_t new_state);
+static void do_stop_softap(void);
+static void do_start_softap(void);
+
+// ---------------------------------------------------------------------------
+// Lifecycle Task (ersetzt den alten wifi_auto_off_task)
+// ---------------------------------------------------------------------------
+static void wifi_lifecycle_task(void *arg)
+{
+    while (s_initialized) {
+        int64_t now = esp_timer_get_time();
+
+        // --- AP-Shutdown-Timer (30 s nach erfolgreicher STA-Verbindung) ---
+        if (s_ap_shutdown_deadline_us > 0 && now >= s_ap_shutdown_deadline_us) {
+            ESP_LOGI(TAG, "AP-Shutdown-Timer abgelaufen — SoftAP wird gestoppt");
+            do_stop_softap();
+            s_ap_shutdown_deadline_us = 0;
+            if (s_lifecycle_state == WIFI_LIFECYCLE_CONNECTED_AP_TRANSITION) {
+                lifecycle_set_state(WIFI_LIFECYCLE_CONNECTED_STA_ONLY);
+            }
+        }
+
+        // --- Fallback-Timer (60 s ohne STA → AP wieder einschalten) ---
+        if (s_fallback_deadline_us > 0 && now >= s_fallback_deadline_us) {
+            ESP_LOGI(TAG, "Fallback-Timer abgelaufen — SoftAP wird wieder eingeschaltet");
+            s_fallback_deadline_us = 0;
+            if (!s_softap_active && !s_sta_connected) {
+                s_ap_start_requested = true;
+                lifecycle_set_state(WIFI_LIFECYCLE_FALLBACK_AP);
+            }
+        }
+
+        // --- AP-Start-Anforderung ausführen (außerhalb des Locks) ---
+        if (s_ap_start_requested) {
+            s_ap_start_requested = false;
+            do_start_softap();
+        }
+
+        // --- Auto-Off bei Inaktivität (altes Verhalten) ---
+        if (s_auto_off_enabled && s_credentials_available &&
+            s_auto_off_deadline_us > 0 && now >= s_auto_off_deadline_us) {
+            ESP_LOGI(TAG, "WLAN Auto-Off: Inaktivitätszeit erreicht, WLAN wird abgeschaltet");
+            esp_wifi_stop();
+            s_softap_active = false;
+            s_sta_connected = false;
+            s_ip_str[0] = '\0';
+            s_auto_off_deadline_us = 0;
+        }
+
+        // --- Reconnect-Logik im DISCONNECTED_RETRYING / FALLBACK_AP State ---
+        if ((s_lifecycle_state == WIFI_LIFECYCLE_DISCONNECTED_RETRYING ||
+             s_lifecycle_state == WIFI_LIFECYCLE_FALLBACK_AP) &&
+            !s_sta_connected && s_credentials_available) {
+            if (now - s_last_reconnect_attempt_us >=
+                (int64_t)WIFI_STA_RECONNECT_INTERVAL_S * 1000000LL) {
+                s_last_reconnect_attempt_us = now;
+                ESP_LOGI(TAG, "Reconnect-Versuch im State %s",
+                         wifi_manager_lifecycle_state_str());
+                esp_wifi_connect();
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    s_auto_off_task_started = false;
+    vTaskDelete(NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle-Helfer
+// ---------------------------------------------------------------------------
+
+static void lifecycle_set_state(wifi_lifecycle_state_t new_state)
+{
+    const char *names[] = {
+        "BOOTING", "AP_ONLY", "AP_STA_CONNECTING",
+        "CONNECTED_AP_TRANSITION", "CONNECTED_STA_ONLY",
+        "DISCONNECTED_RETRYING", "FALLBACK_AP"
+    };
+    ESP_LOGI(TAG, "Lifecycle: %s → %s",
+             (s_lifecycle_state < sizeof(names)/sizeof(names[0]))
+                ? names[s_lifecycle_state] : "?",
+             (new_state < sizeof(names)/sizeof(names[0]))
+                ? names[new_state] : "?");
+    s_lifecycle_state = new_state;
+}
+
+static void start_ap_shutdown_timer(void)
+{
+    s_ap_shutdown_deadline_us = esp_timer_get_time() +
+                                (int64_t)WIFI_AP_SHUTDOWN_DELAY_S * 1000000LL;
+    ESP_LOGI(TAG, "AP-Shutdown-Timer gestartet (%d s)", WIFI_AP_SHUTDOWN_DELAY_S);
+}
+
+static void cancel_ap_shutdown_timer(void)
+{
+    if (s_ap_shutdown_deadline_us > 0) {
+        ESP_LOGI(TAG, "AP-Shutdown-Timer abgebrochen");
+    }
+    s_ap_shutdown_deadline_us = 0;
+}
+
+static void start_fallback_timer(void)
+{
+    s_fallback_deadline_us = esp_timer_get_time() +
+                             (int64_t)WIFI_FALLBACK_RETRY_WINDOW_S * 1000000LL;
+    ESP_LOGI(TAG, "Fallback-Timer gestartet (%d s)", WIFI_FALLBACK_RETRY_WINDOW_S);
+}
+
+static void cancel_fallback_timer(void)
+{
+    if (s_fallback_deadline_us > 0) {
+        ESP_LOGI(TAG, "Fallback-Timer abgebrochen");
+    }
+    s_fallback_deadline_us = 0;
+}
+
+static void do_stop_softap(void)
+{
+    if (!s_softap_active) return;
+
+    ESP_LOGI(TAG, "SoftAP wird gestoppt");
+    // AP-Interface deaktivieren durch leere SSID – WiFi bleibt im APSTA-Mode
+    // (APSTA wird für esp_wifi_scan_start benötigt)
+    wifi_config_t empty_ap = {0};
+    esp_wifi_set_config(WIFI_IF_AP, &empty_ap);
+    s_softap_active = false;
+    ESP_LOGI(TAG, "SoftAP deaktiviert, WiFi bleibt in APSTA-Mode");
+}
+
+static void do_start_softap(void)
+{
+    if (s_softap_active) return;
+    if (s_hostname[0] == '\0') {
+        wifi_manager_generate_hostname(s_hostname, sizeof(s_hostname));
+    }
+
+    ESP_LOGI(TAG, "SoftAP wird gestartet (SSID: %s)", s_hostname);
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid_len = 0,
+            .channel = 1,
+            .max_connection = 4,
+            .authmode = WIFI_AUTH_OPEN,
+            .pmf_cfg = { .required = false },
+        },
+    };
+    snprintf((char *)wifi_config.ap.ssid, sizeof(wifi_config.ap.ssid),
+             "%s", s_hostname);
+
+    // Immer APSTA-Mode – STA-Interface wird für WLAN-Scan benötigt.
+    // AP-Interface existiert, broadcastet aber nur wenn AP-Config gesetzt ist.
+    if (s_wifi_started) {
+        // WiFi läuft bereits → nur Mode wechseln und AP-Config setzen
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    } else {
+        // Erststart: APSTA-Mode, nur AP-Config (STA nutzt Defaults)
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+        ESP_ERROR_CHECK(esp_wifi_start());
+        s_wifi_started = true;
+    }
+
+    s_softap_active = true;
+    ESP_LOGI(TAG, "SoftAP aktiv: SSID=%s", s_hostname);
+}
 
 // ---------------------------------------------------------------------------
 // Event-Handler (WiFi & IP)
@@ -63,18 +279,62 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "WiFi Station gestartet");
                 break;
 
-            case WIFI_EVENT_STA_CONNECTED:
-                ESP_LOGI(TAG, "WiFi Station verbunden");
+            case WIFI_EVENT_STA_CONNECTED: {
+                wifi_event_sta_connected_t *event =
+                    (wifi_event_sta_connected_t *)event_data;
+                ESP_LOGI(TAG, "WiFi Station verbunden mit SSID");
+                snprintf(s_connection_state, sizeof(s_connection_state), "connecting");
+                snprintf(s_connection_message, sizeof(s_connection_message),
+                         "Connected; waiting for IP address");
+                // SSID merken
+                if (event) {
+                    size_t len = strnlen((const char *)event->ssid,
+                                         sizeof(event->ssid));
+                    len = len < sizeof(s_sta_ssid) - 1
+                          ? len : sizeof(s_sta_ssid) - 1;
+                    memcpy(s_sta_ssid, event->ssid, len);
+                    s_sta_ssid[len] = '\0';
+                }
                 break;
+            }
 
             case WIFI_EVENT_STA_DISCONNECTED: {
-                if (s_sta_connected) {
+                wifi_event_sta_disconnected_t *event =
+                    (wifi_event_sta_disconnected_t *)event_data;
+                bool was_connected = s_sta_connected;
+                if (was_connected) {
                     s_sta_connected = false;
                     s_ip_str[0] = '\0';
+                    cancel_ap_shutdown_timer();
                     if (s_disconnected_cb) {
                         s_disconnected_cb();
                     }
                 }
+
+                if (!s_credentials_available) {
+                    // Keine Creds → nichts zu reconnecten
+                    ESP_LOGI(TAG, "Keine gespeicherten Creds — kein Reconnect");
+                    if (s_lifecycle_state == WIFI_LIFECYCLE_AP_STA_CONNECTING) {
+                        lifecycle_set_state(WIFI_LIFECYCLE_AP_ONLY);
+                    }
+                    break;
+                }
+
+                if (was_connected &&
+                    s_lifecycle_state == WIFI_LIFECYCLE_CONNECTED_STA_ONLY) {
+                    // War verbunden im STA-only-Modus → Fallback starten
+                    ESP_LOGW(TAG, "STA-Verbindung im STA-only-Modus verloren — "
+                             "Fallback-Timer starten");
+                    lifecycle_set_state(WIFI_LIFECYCLE_DISCONNECTED_RETRYING);
+                    start_fallback_timer();
+                    s_retry_count = 0;
+                    // Ersten Reconnect sofort versuchen
+                    esp_wifi_connect();
+                    s_last_reconnect_attempt_us = esp_timer_get_time();
+                    break;
+                }
+
+                // Standard-Retry (AP+STA-Modus oder schon im Fallback)
                 if (s_retry_count < s_max_retry) {
                     esp_wifi_connect();
                     s_retry_count++;
@@ -84,7 +344,91 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                     ESP_LOGE(TAG, "WiFi-Verbindung nach %d Versuchen fehlgeschlagen",
                              s_max_retry);
                     xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+                    snprintf(s_connection_state, sizeof(s_connection_state), "failed");
+                    const char *safe_reason =
+                        "Connection failed; check SSID, password, and signal";
+                    if (event && event->reason == WIFI_REASON_NO_AP_FOUND) {
+                        safe_reason = "Network not found or signal is too weak";
+                    } else if (event &&
+                               (event->reason == WIFI_REASON_AUTH_FAIL ||
+                                event->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT)) {
+                        safe_reason = "Authentication failed; check the Wi-Fi password";
+                    }
+                    snprintf(s_connection_message, sizeof(s_connection_message),
+                             "%s", safe_reason);
+
+                    // Wenn alle Retries erschöpft: Fallback starten falls nötig
+                    if (!s_softap_active && !s_sta_connected &&
+                        s_lifecycle_state != WIFI_LIFECYCLE_FALLBACK_AP) {
+                        start_fallback_timer();
+                        lifecycle_set_state(WIFI_LIFECYCLE_DISCONNECTED_RETRYING);
+                    }
                 }
+                break;
+            }
+
+            case WIFI_EVENT_SCAN_DONE: {
+                wifi_event_sta_scan_done_t *event =
+                    (wifi_event_sta_scan_done_t *)event_data;
+                uint16_t found = 0;
+                esp_err_t err = event && event->status != 0
+                    ? ESP_FAIL : esp_wifi_scan_get_ap_num(&found);
+                wifi_ap_record_t *records = NULL;
+                if (err == ESP_OK && found > 0) {
+                    records = calloc(found, sizeof(*records));
+                    if (!records) err = ESP_ERR_NO_MEM;
+                }
+                if (err == ESP_OK && found > 0) {
+                    err = esp_wifi_scan_get_ap_records(&found, records);
+                }
+
+                if (s_state_lock) xSemaphoreTake(s_state_lock, portMAX_DELAY);
+                s_scan_count = 0;
+                s_scan_error = err;
+                if (err == ESP_OK) {
+                    for (uint16_t i = 0; i < found; ++i) {
+                        const char *ssid = (const char *)records[i].ssid;
+                        if (!ssid || ssid[0] == '\0') continue;
+                        size_t existing = s_scan_count;
+                        for (size_t j = 0; j < s_scan_count; ++j) {
+                            if (strcmp(s_scan_results[j].ssid, ssid) == 0) {
+                                existing = j;
+                                break;
+                            }
+                        }
+                        wifi_manager_scan_result_t candidate = {0};
+                        snprintf(candidate.ssid, sizeof(candidate.ssid), "%s", ssid);
+                        candidate.rssi = records[i].rssi;
+                        candidate.secure = records[i].authmode != WIFI_AUTH_OPEN;
+                        if (existing < s_scan_count) {
+                            if (candidate.rssi > s_scan_results[existing].rssi) {
+                                s_scan_results[existing] = candidate;
+                            }
+                        } else if (s_scan_count < WIFI_MANAGER_SCAN_MAX_RESULTS) {
+                            s_scan_results[s_scan_count++] = candidate;
+                        } else if (candidate.rssi < s_scan_results[s_scan_count - 1].rssi) {
+                            continue;
+                        } else {
+                            s_scan_results[s_scan_count - 1] = candidate;
+                        }
+                        for (size_t a = 0; a < s_scan_count; ++a) {
+                            for (size_t b = a + 1; b < s_scan_count; ++b) {
+                                if (s_scan_results[b].rssi > s_scan_results[a].rssi) {
+                                    wifi_manager_scan_result_t tmp = s_scan_results[a];
+                                    s_scan_results[a] = s_scan_results[b];
+                                    s_scan_results[b] = tmp;
+                                }
+                            }
+                        }
+                    }
+                    s_scan_state = WIFI_MANAGER_SCAN_DONE;
+                } else {
+                    s_scan_state = WIFI_MANAGER_SCAN_FAILED;
+                }
+                if (s_state_lock) xSemaphoreGive(s_state_lock);
+                free(records);
+                ESP_LOGI(TAG, "Wi-Fi scan completed (%u visible unique results)",
+                         (unsigned)s_scan_count);
                 break;
             }
 
@@ -125,8 +469,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 esp_ip4addr_ntoa(&event->ip_info.ip, s_ip_str, sizeof(s_ip_str));
                 s_sta_connected = true;
                 s_retry_count = 0;
+                cancel_fallback_timer();
                 ESP_LOGI(TAG, "IP-Adresse erhalten: %s", s_ip_str);
+                snprintf(s_connection_state, sizeof(s_connection_state), "connected");
+                snprintf(s_connection_message, sizeof(s_connection_message),
+                         "Mit Heimnetz verbunden");
                 xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+                // Lifecycle-Übergang: AP-Shutdown-Timer starten
+                if (s_softap_active) {
+                    ESP_LOGI(TAG, "STA verbunden mit aktivem AP — "
+                             "starte %d s Shutdown-Timer", WIFI_AP_SHUTDOWN_DELAY_S);
+                    start_ap_shutdown_timer();
+                    lifecycle_set_state(WIFI_LIFECYCLE_CONNECTED_AP_TRANSITION);
+                } else {
+                    lifecycle_set_state(WIFI_LIFECYCLE_CONNECTED_STA_ONLY);
+                }
+
                 if (s_connected_cb) {
                     s_connected_cb();
                 }
@@ -161,6 +520,8 @@ esp_err_t wifi_manager_init(void)
     if (!s_wifi_event_group) {
         return ESP_ERR_NO_MEM;
     }
+    s_state_lock = xSemaphoreCreateMutex();
+    if (!s_state_lock) return ESP_ERR_NO_MEM;
 
     // Netzwerk-Interface initialisieren
     ESP_ERROR_CHECK(esp_netif_init());
@@ -183,6 +544,14 @@ esp_err_t wifi_manager_init(void)
         IP_EVENT, IP_EVENT_STA_LOST_IP, &wifi_event_handler, NULL, NULL));
 
     s_initialized = true;
+    lifecycle_set_state(WIFI_LIFECYCLE_BOOTING);
+
+    // Lifecycle-Task starten (ersetzt wifi_auto_off_task)
+    if (!s_auto_off_task_started) {
+        s_auto_off_task_started = xTaskCreate(wifi_lifecycle_task,
+                                               "wifi_lifecycle",
+                                               4096, NULL, 3, NULL) == pdPASS;
+    }
     ESP_LOGI(TAG, "WiFi-Manager initialisiert");
 
     return ESP_OK;
@@ -232,30 +601,20 @@ esp_err_t wifi_manager_start_softap(const char *hostname)
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "SoftAP starten (Hostname: %s)", hostname);
+    if (hostname && hostname[0] != '\0') {
+        strncpy(s_hostname, hostname, sizeof(s_hostname) - 1);
+        s_hostname[sizeof(s_hostname) - 1] = '\0';
+    }
 
-    // SoftAP-Konfiguration
-    wifi_config_t wifi_config = {
-        .ap = {
-            .ssid_len = 0,
-            .channel = 1,
-            .max_connection = 4,
-            .authmode = WIFI_AUTH_OPEN,
-            .pmf_cfg = {
-                .required = false,
-            },
-        },
-    };
+    ESP_LOGI(TAG, "SoftAP starten (Hostname: %s)", s_hostname);
 
-    // AP-SSID aus Hostname: "a800x-3f21"
-    snprintf((char *)wifi_config.ap.ssid, sizeof(wifi_config.ap.ssid),
-             "%s", hostname);
+    do_start_softap();
 
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "SoftAP gestartet: SSID=%s", hostname);
+    if (!s_sta_connected && !s_credentials_available) {
+        lifecycle_set_state(WIFI_LIFECYCLE_AP_ONLY);
+    } else if (!s_sta_connected) {
+        lifecycle_set_state(WIFI_LIFECYCLE_AP_STA_CONNECTING);
+    }
 
     return ESP_OK;
 }
@@ -264,9 +623,8 @@ esp_err_t wifi_manager_stop_softap(void)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    ESP_LOGI(TAG, "SoftAP stoppen...");
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    s_softap_active = false;
+    cancel_ap_shutdown_timer();
+    do_stop_softap();
     return ESP_OK;
 }
 
@@ -286,13 +644,16 @@ esp_err_t wifi_manager_connect_sta(const char *ssid, const char *password)
         return ESP_ERR_INVALID_ARG;
     }
 
-    ESP_LOGI(TAG, "Verbinde mit WLAN: %s", ssid);
+    ESP_LOGI(TAG, "Starting Wi-Fi station connection attempt");
+    snprintf(s_connection_state, sizeof(s_connection_state), "connecting");
+    snprintf(s_connection_message, sizeof(s_connection_message), "Connecting…");
 
     // Event-Bits zurücksetzen
     xEventGroupClearBits(s_wifi_event_group,
                          WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
     s_retry_count = 0;
+    cancel_fallback_timer();
 
     wifi_config_t wifi_config = {0};
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
@@ -306,10 +667,30 @@ esp_err_t wifi_manager_connect_sta(const char *ssid, const char *password)
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    // Immer APSTA-Mode – STA-Interface allein reicht nicht für Scan.
+    // AP-Interface existiert, broadcastet aber nur wenn AP-Config gesetzt ist.
+    // Minimale AP-Konfiguration setzen (leere SSID = kein Broadcast),
+    // damit der APSTA-Mode vollständig initialisiert ist und
+    // esp_wifi_scan_start() funktioniert.
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (!s_softap_active) {
+        wifi_config_t ap_min = {0};
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_min));
+        ESP_LOGD(TAG, "Minimale AP-Konfiguration für APSTA-Mode gesetzt");
+    }
+    if (!s_wifi_started) {
+        ESP_ERROR_CHECK(esp_wifi_start());
+        s_wifi_started = true;
+    }
     ESP_ERROR_CHECK(esp_wifi_connect());
+
+    // Lifecycle-Update
+    if (s_softap_active && s_credentials_available) {
+        lifecycle_set_state(WIFI_LIFECYCLE_AP_STA_CONNECTING);
+    } else if (s_softap_active) {
+        lifecycle_set_state(WIFI_LIFECYCLE_AP_STA_CONNECTING);
+    }
 
     ESP_LOGI(TAG, "WiFi-Verbindungsversuch gestartet");
 
@@ -335,6 +716,11 @@ bool wifi_manager_is_connected(void)
     return s_sta_connected;
 }
 
+bool wifi_manager_is_softap_active(void)
+{
+    return s_softap_active;
+}
+
 esp_err_t wifi_manager_get_ip_str(char *ip, size_t max_len)
 {
     if (s_ip_str[0] == '\0') {
@@ -343,6 +729,141 @@ esp_err_t wifi_manager_get_ip_str(char *ip, size_t max_len)
     strncpy(ip, s_ip_str, max_len - 1);
     ip[max_len - 1] = '\0';
     return ESP_OK;
+}
+
+esp_err_t wifi_manager_get_sta_ssid(char *ssid, size_t max_len)
+{
+    if (!s_sta_connected || s_sta_ssid[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+    strncpy(ssid, s_sta_ssid, max_len - 1);
+    ssid[max_len - 1] = '\0';
+    return ESP_OK;
+}
+
+esp_err_t wifi_manager_get_hostname(char *hostname, size_t max_len)
+{
+    if (s_hostname[0] == '\0') {
+        wifi_manager_generate_hostname(s_hostname, sizeof(s_hostname));
+    }
+    strncpy(hostname, s_hostname, max_len - 1);
+    hostname[max_len - 1] = '\0';
+    return ESP_OK;
+}
+
+int wifi_manager_get_ap_shutdown_remaining_sec(void)
+{
+    if (s_ap_shutdown_deadline_us == 0) return 0;
+    int64_t remaining = (s_ap_shutdown_deadline_us - esp_timer_get_time())
+                        / 1000000LL;
+    return remaining > 0 ? (int)remaining : 0;
+}
+
+wifi_lifecycle_state_t wifi_manager_get_lifecycle_state(void)
+{
+    return s_lifecycle_state;
+}
+
+const char *wifi_manager_lifecycle_state_str(void)
+{
+    switch (s_lifecycle_state) {
+        case WIFI_LIFECYCLE_BOOTING:              return "booting";
+        case WIFI_LIFECYCLE_AP_ONLY:              return "ap_only";
+        case WIFI_LIFECYCLE_AP_STA_CONNECTING:    return "ap_sta_connecting";
+        case WIFI_LIFECYCLE_CONNECTED_AP_TRANSITION: return "connected_ap_transition";
+        case WIFI_LIFECYCLE_CONNECTED_STA_ONLY:   return "connected_sta_only";
+        case WIFI_LIFECYCLE_DISCONNECTED_RETRYING:  return "disconnected_retrying";
+        case WIFI_LIFECYCLE_FALLBACK_AP:          return "fallback_ap";
+        default:                                   return "unknown";
+    }
+}
+
+bool wifi_manager_has_credentials(void)
+{
+    return s_credentials_available;
+}
+
+void wifi_manager_set_has_credentials(bool has)
+{
+    s_credentials_available = has;
+}
+
+esp_err_t wifi_manager_start_scan(void)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    if (s_state_lock) xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    if (s_scan_state == WIFI_MANAGER_SCAN_RUNNING) {
+        if (s_state_lock) xSemaphoreGive(s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_scan_state = WIFI_MANAGER_SCAN_RUNNING;
+    s_scan_count = 0;
+    s_scan_error = ESP_OK;
+    if (s_state_lock) xSemaphoreGive(s_state_lock);
+
+    wifi_scan_config_t config = {
+        .ssid = NULL, .bssid = NULL, .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+    esp_err_t err = esp_wifi_scan_start(&config, false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_scan_start failed: %s (0x%x)",
+                 esp_err_to_name(err), err);
+        if (s_state_lock) xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        s_scan_state = WIFI_MANAGER_SCAN_FAILED;
+        s_scan_error = err;
+        if (s_state_lock) xSemaphoreGive(s_state_lock);
+    }
+    return err;
+}
+
+wifi_manager_scan_state_t wifi_manager_get_scan_results(
+    wifi_manager_scan_result_t *results, size_t capacity, size_t *count,
+    esp_err_t *scan_error)
+{
+    if (s_state_lock) xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    wifi_manager_scan_state_t state = s_scan_state;
+    size_t n = s_scan_count < capacity ? s_scan_count : capacity;
+    if (results && n) memcpy(results, s_scan_results, n * sizeof(*results));
+    if (count) *count = n;
+    if (scan_error) *scan_error = s_scan_error;
+    if (s_state_lock) xSemaphoreGive(s_state_lock);
+    return state;
+}
+
+void wifi_manager_get_connection_status(char *state, size_t state_len,
+                                        char *message, size_t message_len)
+{
+    snprintf(state, state_len, "%s", s_connection_state);
+    snprintf(message, message_len, "%s", s_connection_message);
+}
+
+void wifi_manager_configure_auto_off(bool enabled, uint32_t initial_timeout_s,
+                                     bool credentials_available)
+{
+    s_auto_off_enabled = enabled;
+    s_credentials_available = credentials_available;
+    if (enabled && credentials_available && initial_timeout_s > 0) {
+        s_auto_off_deadline_us = esp_timer_get_time() +
+                                 (int64_t)initial_timeout_s * 1000000LL;
+    } else {
+        s_auto_off_deadline_us = 0;
+    }
+    ESP_LOGI(TAG, "WLAN Auto-Off: %s", enabled ? "aktiv" : "deaktiviert (dauerhaft erreichbar)");
+}
+
+void wifi_manager_note_user_activity(void)
+{
+    if (s_auto_off_enabled && s_credentials_available) {
+        s_auto_off_deadline_us = esp_timer_get_time() +
+                                 (int64_t)WIFI_USER_IDLE_TIMEOUT_S * 1000000LL;
+    }
+}
+
+bool wifi_manager_auto_off_enabled(void)
+{
+    return s_auto_off_enabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -357,24 +878,14 @@ esp_err_t wifi_manager_start_captive_portal(void)
     }
 
     ESP_LOGI(TAG, "Captive Portal gestartet (DNS-Weiterleitung)");
-
-    // DNS-Weiterleitung: Alle DNS-Anfragen auf ESP-IP auflösen
-    // Die eigentliche Implementierung erfolgt über den HTTP-Server,
-    // der alle Anfragen auf die Setup-Seite umleitet.
-    //
-    // Hier wird der DNS-Server für das AP-Interface konfiguriert.
     esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (ap_netif) {
         esp_netif_dns_info_t dns;
-        esp_netif_get_ip_info(ap_netif, NULL);  // netif aktivieren
-        // Setze DNS auf die AP-IP selbst
         esp_netif_get_ip_info(ap_netif, NULL);
-        dns.ip.u_addr.ip4.addr = esp_ip4_addr_get_byte(&((esp_netif_ip_info_t){
-            .ip = { .addr = 0 }
-        }).ip, 0);  // Platzhalter
+        dns.ip.u_addr.ip4.addr = esp_ip4_addr_get_byte(
+            &((esp_netif_ip_info_t){ .ip = { .addr = 0 } }).ip, 0);
         esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns);
     }
-
     return ESP_OK;
 }
 
@@ -416,11 +927,19 @@ void wifi_manager_deinit(void)
         vEventGroupDelete(s_wifi_event_group);
         s_wifi_event_group = NULL;
     }
+    if (s_state_lock) {
+        vSemaphoreDelete(s_state_lock);
+        s_state_lock = NULL;
+    }
 
     s_initialized = false;
     s_softap_active = false;
     s_sta_connected = false;
     s_ip_str[0] = '\0';
+    s_sta_ssid[0] = '\0';
+    s_ap_shutdown_deadline_us = 0;
+    s_fallback_deadline_us = 0;
+    s_wifi_started = false;
     s_connected_cb = NULL;
     s_disconnected_cb = NULL;
 
