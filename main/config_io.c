@@ -126,9 +126,9 @@ static bool validate_preq(const cJSON *preeq)
         cJSON *t = cJSON_GetObjectItem(f, "type");
         if (!cJSON_IsNumber(t) || t->valueint < 0 || t->valueint > 8) return false;
         cJSON *hz = cJSON_GetObjectItem(f, "frequency_hz");
-        if (!cJSON_IsNumber(hz) || hz->valuedouble < 1 || hz->valuedouble > UINT16_MAX) return false;
+        if (!cJSON_IsNumber(hz) || hz->valuedouble < 0 || hz->valuedouble > UINT16_MAX) return false;
         cJSON *q = cJSON_GetObjectItem(f, "q");
-        if (!cJSON_IsNumber(q) || q->valuedouble <= 0 || q->valuedouble > 63.999) return false;
+        if (!cJSON_IsNumber(q) || q->valuedouble < 0 || q->valuedouble > 63.999) return false;
         cJSON *g = cJSON_GetObjectItem(f, "gain_db");
         if (!cJSON_IsNumber(g) || g->valuedouble < -128.0 || g->valuedouble > 127.996) return false;
     }

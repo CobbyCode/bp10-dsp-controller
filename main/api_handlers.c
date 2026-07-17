@@ -119,9 +119,7 @@ static esp_err_t handler_status_get(httpd_req_t *req)
     // DSP
     bool dsp_ok = usb_host_ctrl_is_device_connected();
     cJSON_AddBoolToObject(root, "dsp_connected", dsp_ok);
-    if (dsp_ok) {
-        cJSON_AddBoolToObject(root, "dsp_noise_suppressor", g_dsp_ns_state);
-    }
+    cJSON_AddBoolToObject(root, "dsp_noise_suppressor", dsp_ok ? g_dsp_ns_state : false);
     cJSON_AddBoolToObject(root, "dsp_config_saved", nvs_settings_has_dsp_config());
 
     // MAC
