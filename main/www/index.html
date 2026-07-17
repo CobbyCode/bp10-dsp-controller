@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A800X DSP Controller</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>A800X DSP Controller</h1>
+  <div id="status-bar">
+    <span id="dsp-status" class="status-dot dot-off">DSP</span>
+    <span id="wifi-status" class="status-dot dot-off">WiFi</span>
+    <span id="device-ip" class="ip"></span>
+  </div>
+</header>
+
+<main>
+  <!-- DSP Controls -->
+  <section id="dsp-controls">
+    <h2>DSP-Steuerung</h2>
+    <div class="control-grid">
+      <label class="toggle">
+        <input type="checkbox" id="noise-suppressor" data-effect="noise">
+        <span class="toggle-label">Noise Suppressor</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="virtual-bass" data-effect="bass">
+        <span class="toggle-label">Virtual Bass</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="silence-detector" data-effect="silence">
+        <span class="toggle-label">Silence Detector</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="preeq-enable" data-effect="preeq">
+        <span class="toggle-label">PreEQ</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="drc-enable" data-effect="drc">
+        <span class="toggle-label">DRC / Compressor</span>
+      </label>
+    </div>
+  </section>
+
+  <!-- PreEQ Filter Details -->
+  <section id="preeq-details" class="hidden">
+    <h3>PreEQ Filter</h3>
+    <div id="preeq-filters"></div>
+  </section>
+
+  <!-- System Status -->
+  <section id="system-status">
+    <h2>System</h2>
+    <div class="info-grid">
+      <div><span class="label">Gerät</span><span id="sys-hostname">-</span></div>
+      <div><span class="label">MAC</span><span id="sys-mac">-</span></div>
+      <div><span class="label">IP</span><span id="sys-ip">-</span></div>
+      <div><span class="label">Firmware</span><span id="sys-version">-</span></div>
+    </div>
+  </section>
+
+  <!-- Profile Management -->
+  <section id="profiles">
+    <h2>Profile</h2>
+    <div class="button-row">
+      <button id="btn-profile-save" class="btn btn-secondary">Speichern</button>
+      <button id="btn-profile-load" class="btn btn-secondary">Laden</button>
+    </div>
+  </section>
+
+  <!-- Configuration -->
+  <section id="config">
+    <h2>Konfiguration</h2>
+    <div class="button-row">
+      <button id="btn-config-export" class="btn btn-secondary">Exportieren</button>
+      <button id="btn-config-import" class="btn btn-secondary">Importieren</button>
+    </div>
+  </section>
+
+  <!-- OTA Update -->
+  <section id="ota">
+    <h2>Firmware-Update</h2>
+    <div class="input-row">
+      <input type="url" id="ota-url" placeholder="https://.../firmware.bin">
+      <button id="btn-ota-update" class="btn btn-primary">Update</button>
+    </div>
+    <div id="ota-progress" class="hidden progress-bar">
+      <div class="progress-fill"></div>
+    </div>
+  </section>
+
+  <!-- Factory Reset -->
+  <section id="factory-reset">
+    <h2>Werkseinstellungen</h2>
+    <button id="btn-factory-reset" class="btn btn-danger">Zurücksetzen</button>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,172 @@
+/* A800X DSP Controller — Styles */
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --surface2: #0f3460;
+  --accent: #e94560;
+  --text: #eee;
+  --text-dim: #999;
+  --green: #2ecc71;
+  --red: #e74c3c;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+h1 { font-size: 1.3rem; color: var(--accent); }
+h2 { font-size: 1.1rem; margin-bottom: 12px; color: var(--text); border-bottom: 1px solid var(--surface2); padding-bottom: 6px; }
+h3 { font-size: 1rem; margin-bottom: 8px; color: var(--text-dim); }
+
+#status-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.status-dot {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--surface2);
+}
+.dot-on { background: var(--green); color: #000; }
+.dot-off { background: var(--red); color: #fff; }
+.ip { font-size: 0.75rem; color: var(--text-dim); }
+
+section {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border-radius: var(--radius);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input { display: none; }
+
+.toggle-label {
+  font-size: 0.9rem;
+}
+
+.toggle input:checked + .toggle-label {
+  color: var(--green);
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.info-grid div {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 10px;
+  background: var(--surface2);
+  border-radius: 4px;
+}
+
+.label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; }
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.input-row {
+  display: flex;
+  gap: 8px;
+}
+
+input[type="url"] {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  color: #fff;
+}
+.btn-primary { background: var(--accent); }
+.btn-secondary { background: #555; }
+.btn-danger { background: #c0392b; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.hidden { display: none; }
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: var(--surface2);
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--green);
+  width: 0%;
+  transition: width 0.3s;
+}
+
+#preeq-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px;
+}
+
+.filter-card {
+  background: var(--surface2);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 480px) {
+  .info-grid { grid-template-columns: 1fr; }
+}
