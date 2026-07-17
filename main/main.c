@@ -89,13 +89,13 @@ void app_main(void)
         // Bei späterer Verbindung (Hot-Plug/Reconnect):
         // gleicher Ablauf wie beim Boot – Konfiguration anwenden oder nur lesen.
         if (g_dsp_connected && !was_connected) {
-            ESP_LOGI(TAG, "DSP-Gerät neu verbunden – Konfiguration wiederherstellen...");
+            ESP_LOGI(TAG, "A800X erkannt – Konfiguration wiederherstellen...");
             dsp_boot_apply_task(NULL);
         }
 
         // Bei Trennung: Status vermerken
         if (!g_dsp_connected && was_connected) {
-            ESP_LOGI(TAG, "DSP-Gerät getrennt – warte auf Wiederverbindung.");
+            ESP_LOGI(TAG, "A800X getrennt – warte auf Wiederverbindung.");
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -283,7 +283,7 @@ static void dsp_boot_apply_task(void *arg)
         if (drc_ok) ok_count++; else fail_count++;
     }
 
-    ESP_LOGI(TAG, "Boot-Apply abgeschlossen: %d/%d Module bestätigt%s",
+    ESP_LOGI(TAG, "Reconnect-Konfiguration bestätigt: %d/%d Module%s",
              ok_count, ok_count + fail_count,
              fail_count > 0 ? " (Teilfehler – nicht bestätigte Werte werden "
                               "nicht erneut geschrieben)" : "");
@@ -303,7 +303,10 @@ static void dsp_boot_readonly_task(void *arg)
 {
     (void)arg;
 
-    if (!g_dsp_connected) return;
+    if (!g_dsp_connected) {
+        ESP_LOGW(TAG, "dsp_boot_readonly: DSP nicht verbunden – Abbruch");
+        return;
+    }
 
     dsp_profile_t profile;
     esp_err_t err = dsp_model_readback(&profile);

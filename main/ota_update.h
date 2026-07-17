@@ -43,5 +43,5 @@ void ota_set_version(const char *version);
 
 // APP_VERSION wird in der main.c definiert
 #ifndef APP_VERSION
-#define APP_VERSION "0.2.0"
+#define APP_VERSION "0.3.0"
 #endif

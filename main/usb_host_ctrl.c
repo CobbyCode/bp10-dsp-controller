@@ -70,7 +70,7 @@ static void transfer_callback(usb_transfer_t *xfer)
             s_xfer_result = ESP_ERR_TIMEOUT;
             break;
         case USB_TRANSFER_STATUS_NO_DEVICE:
-            ESP_LOGW(TAG, "Transfer NO_DEVICE");
+            ESP_LOGW(TAG, "Transfer NO_DEVICE – Gerät während Transfers entfernt");
             s_xfer_result = ESP_ERR_INVALID_STATE;
             s_device_connected = false;
             s_device_handle = NULL;
@@ -123,9 +123,6 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
                 ESP_LOGI(TAG, "  VID:0x%04X  PID:0x%04X  bcdUSB:0x%04X  Klasse:%d",
                          dev_desc->idVendor, dev_desc->idProduct,
                          dev_desc->bcdUSB, dev_desc->bDeviceClass);
-                ESP_LOGI(TAG, "  Hersteller:0x%04X  Produkt:0x%04X  MaxPkt:%d",
-                         dev_desc->idVendor, dev_desc->idProduct,
-                         dev_desc->bMaxPacketSize0);
 
                 if (dev_desc->idVendor == A800X_USB_VID &&
                     dev_desc->idProduct == A800X_USB_PID) {
@@ -158,7 +155,6 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
             if (err == ESP_OK && config_desc) {
                 ESP_LOGI(TAG, "  Config: %u Interface(s), wTotalLength=%u Bytes",
                          config_desc->bNumInterfaces, config_desc->wTotalLength);
-                // Rohen Descriptor dumpen
                 uint16_t dump_len = config_desc->wTotalLength < 128 ? config_desc->wTotalLength : 128;
                 ESP_LOGI(TAG, "  ConfigDesc (%d bytes):", dump_len);
                 ESP_LOG_BUFFER_HEX_LEVEL(TAG, config_desc, dump_len, ESP_LOG_INFO);
@@ -167,21 +163,48 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
             }
 
             s_device_connected = true;
-            ESP_LOGI(TAG, "USB-Gerät sauber enumeriert; ein vorheriges 'Root port reset failed' ist nicht blockierend");
+            ESP_LOGI(TAG, "USB-Gerät sauber enumeriert");
             if (s_events) {
                 xEventGroupSetBits(s_events, EVENT_DEVICE_CONNECTED);
             }
             break;
         }
 
-        case USB_HOST_CLIENT_EVENT_DEV_GONE:
-            ESP_LOGW(TAG, "USB-EVENT: DEVICE GONE – Gerät getrennt/abgesteckt");
+        case USB_HOST_CLIENT_EVENT_DEV_GONE: {
+            ESP_LOGW(TAG, "A800X getrennt – USB-Device-Handle wird freigegeben");
+
+            usb_device_handle_t old_handle = s_device_handle;
+
+            // Handle sauber freigeben, sonst blockiert der alte Handle
+            // die Enumeration eines neuen Geräts.
+            if (s_device_handle) {
+                esp_err_t release_err = usb_host_interface_release(
+                    s_client_handle, s_device_handle, 0);
+                if (release_err != ESP_OK) {
+                    ESP_LOGE(TAG, "interface_release fehlgeschlagen: %s",
+                             esp_err_to_name(release_err));
+                }
+
+                esp_err_t close_err = usb_host_device_close(
+                    s_client_handle, s_device_handle);
+                if (close_err != ESP_OK) {
+                    ESP_LOGE(TAG, "device_close fehlgeschlagen: %s",
+                             esp_err_to_name(close_err));
+                }
+
+                ESP_LOGD(TAG, "Handle %p freigegeben", (void *)old_handle);
+            } else {
+                ESP_LOGD(TAG, "DEV_GONE: Handle bereits NULL (Double-Event)");
+            }
+
             s_device_handle = NULL;
             s_device_connected = false;
+
             if (s_events) {
                 xEventGroupSetBits(s_events, EVENT_DEVICE_DISCONNECTED);
             }
             break;
+        }
 
         case USB_HOST_CLIENT_EVENT_DEV_SUSPENDED:
             ESP_LOGI(TAG, "USB-EVENT: DEVICE SUSPENDED");
@@ -378,6 +401,8 @@ static esp_err_t submit_control_transfer(
     uint16_t *in_len)
 {
     if (!s_device_connected || !s_device_handle || !s_client_handle) {
+        ESP_LOGD(TAG, "Control-Transfer abgelehnt: connected=%d",
+                 s_device_connected);
         return ESP_ERR_INVALID_STATE;
     }
 
