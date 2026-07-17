@@ -810,7 +810,7 @@
     await api('POST', '/device/reset');
   });
 
-  // --- DSP-Konfiguration Export/Import ---
+  // --- DSP Configuration Export/Import ---
   let importPreviewData = null;
 
   $('btn-dsp-export').addEventListener('click', async () => {
@@ -822,7 +822,7 @@
       a.download = 'a800x-dsp-config.json';
       a.click();
     } catch (e) {
-      alert('Export fehlgeschlagen: ' + e.message);
+      alert('Export failed: ' + e.message);
     }
   });
 
@@ -837,7 +837,7 @@
     msg.className = 'form-message';
 
     if (!data.data || !data.data.dsp) {
-      content.innerHTML = '<p class="module-hint">Keine DSP-Daten in der Import-Datei.</p>';
+      content.innerHTML = '<p class="module-hint">No DSP data in the import file.</p>';
       importPreviewData = null;
       return;
     }
@@ -848,7 +848,7 @@
     // Noise Suppressor
     const ns = dsp.noise_suppressor || {};
     html += '<div class="preview-item"><strong>Noise Suppressor</strong>';
-    html += `<span>${ns.enabled ? 'EIN' : 'AUS'}</span>`;
+    html += `<span>${ns.enabled ? 'ON' : 'OFF'}</span>`;
     html += `<span>Threshold: ${ns.threshold_db != null ? Number(ns.threshold_db).toFixed(2) + ' dB' : '-'}</span>`;
     html += `<span>Ratio: ${ns.ratio != null ? ns.ratio : '-'}</span>`;
     html += '</div>';
@@ -856,7 +856,7 @@
     // Virtual Bass
     const vb = dsp.virtual_bass || {};
     html += '<div class="preview-item"><strong>Virtual Bass</strong>';
-    html += `<span>${vb.enabled ? 'EIN' : 'AUS'}</span>`;
+    html += `<span>${vb.enabled ? 'ON' : 'OFF'}</span>`;
     html += `<span>Cutoff: ${vb.cutoff_hz != null ? vb.cutoff_hz + ' Hz' : '-'}</span>`;
     html += `<span>Intensity: ${vb.intensity_pct != null ? vb.intensity_pct + '%' : '-'}</span>`;
     html += '</div>';
@@ -864,20 +864,20 @@
     // Silence Detector
     const sd = dsp.silence_detector || {};
     html += '<div class="preview-item"><strong>Silence Detector</strong>';
-    html += `<span>${sd.enabled ? 'EIN' : 'AUS'}</span>`;
+    html += `<span>${sd.enabled ? 'ON' : 'OFF'}</span>`;
     html += '</div>';
 
     // PreEQ
     const peq = dsp.preeq || {};
     html += '<div class="preview-item"><strong>PreEQ</strong>';
-    html += `<span>${peq.enabled ? 'EIN' : 'AUS'}</span>`;
+    html += `<span>${peq.enabled ? 'ON' : 'OFF'}</span>`;
     html += `<span>Pre-Gain: ${peq.pregain_db != null ? Number(peq.pregain_db).toFixed(2) + ' dB' : '-'}</span>`;
     html += '</div>';
 
     // DRC
     const drc = dsp.drc || {};
     html += '<div class="preview-item"><strong>DRC</strong>';
-    html += `<span>${drc.enabled ? 'EIN' : 'AUS'}</span>`;
+    html += `<span>${drc.enabled ? 'ON' : 'OFF'}</span>`;
     html += `<span>Mode: ${drc.mode != null ? drc.mode : '-'}</span>`;
     html += '</div>';
 
@@ -894,10 +894,10 @@
         const text = await input.files[0].text();
         const json = JSON.parse(text);
         const result = await api('POST', '/dsp/config/import', json);
-        if (result.status !== 'ok') throw new Error(result.error || 'Import-Validierung fehlgeschlagen');
+        if (result.status !== 'ok') throw new Error(result.error || 'Import validation failed');
         showImportPreview(result);
       } catch (e) {
-        alert('Import fehlgeschlagen: ' + e.message);
+        alert('Import failed: ' + e.message);
       }
     };
     input.click();
@@ -913,7 +913,7 @@
     const button = $('btn-import-apply');
     const msg = $('import-message');
     button.disabled = true;
-    msg.textContent = 'Wende an und verifiziere…';
+    msg.textContent = 'Applying and verifying…';
     msg.className = 'form-message';
     try {
       // Parse the import data into the apply endpoint format
@@ -926,9 +926,9 @@
       };
       const result = await api('POST', '/dsp/apply', payload);
       if (result.status !== 'ok' || !result.data || !result.data.applied) {
-        throw new Error(result.error || 'Apply fehlgeschlagen');
+        throw new Error(result.error || 'Apply failed');
       }
-      msg.textContent = 'Konfiguration angewendet, bestätigt und gespeichert.';
+      msg.textContent = 'Configuration applied, confirmed, and saved.';
       msg.className = 'form-message is-success';
       importPreviewData = null;
       // Kurz warten, dann DSP-State aktualisieren
