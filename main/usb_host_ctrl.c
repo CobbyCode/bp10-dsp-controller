@@ -4,12 +4,13 @@
 // usb_host_ctrl.c — USB-Host-Controller für MVSilicon-Gerät
 //
 // Implementiert die USB-Host-Initialisierung, Device-Enumeration
-// und HID-SET_REPORT-Transfers für den ESP32-S3.
+// und HID Control Transfers (SET_REPORT / GET_REPORT) für den ESP32-S3.
 //
 // Framing:
 //   A5 5A <effect-id> <length/command> ... 16
-//   HID SET_REPORT, 256 Bytes, mit 0x00 aufgefüllt
+//   HID SET_REPORT via Control Transfer, 256 Bytes
 //   bmRequestType: 0x21, bRequest: 0x09, wValue: 0x0200, wIndex: 0x0000
+//   GET_REPORT:    0xA1, bRequest: 0x01, wValue: 0x0100, wIndex: 0x0000
 //
 
 #include "usb_host_ctrl.h"
@@ -20,69 +21,114 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "usb/usb_host.h"
+#include "usb/usb_types_ch9.h"
 #include "driver/gpio.h"
 
 static const char *TAG = "a800x_usb_host";
 
-// --- Interner Zustand ---
+// ---------------------------------------------------------------------------
+// Interner Zustand
+// ---------------------------------------------------------------------------
 static bool s_initialized = false;
 static bool s_device_connected = false;
-static uint8_t s_hid_report[A800X_HID_REPORT_SIZE];
-
-// Device-Handle für das MVSilicon-Gerät
 static usb_device_handle_t s_device_handle = NULL;
-// static uint8_t s_in_ep_addr = 0;
-// static uint8_t s_out_ep_addr = 0;
+static usb_host_client_handle_t s_client_handle = NULL;
 
-// Event-Group für Synchronisation
+// Event-Group für Device-Connect/Disconnect-Sync
 static EventGroupHandle_t s_events = NULL;
-#define EVENT_DEVICE_CONNECTED   BIT0
+#define EVENT_DEVICE_CONNECTED    BIT0
 #define EVENT_DEVICE_DISCONNECTED BIT1
 
-// --- Device-Callback (Forward-Deklaration) ---
-static void device_callback(const usb_host_client_event_msg_t *event_msg,
-                            void *arg);
+// Semaphor für synchrone Control-Transfers
+static SemaphoreHandle_t s_xfer_sem = NULL;
+static esp_err_t s_xfer_result = ESP_OK;
+static int s_xfer_actual = 0;
 
-// --- Client-Task ---
-static void usb_host_client_task(void *arg)
+// ---------------------------------------------------------------------------
+// Transfer-Callback (wird aus usb_host_client_handle_events() aufgerufen)
+// ---------------------------------------------------------------------------
+static void transfer_callback(usb_transfer_t *xfer)
 {
-    ESP_LOGI(TAG, "USB-Host-Client-Task gestartet");
+    s_xfer_result = ESP_OK;
+    s_xfer_actual = xfer->actual_num_bytes;
 
-    // Client registrieren
-    usb_host_client_handle_t client_handle;
-    usb_host_client_config_t client_config = {
-        .is_synchronous = false,
-        .max_num_event_msg = 5,
-        .async = {
-            .client_event_callback = device_callback,
-            .callback_arg = NULL,
-        },
-    };
-    ESP_ERROR_CHECK(usb_host_client_register(&client_config, &client_handle));
-
-    while (1) {
-        usb_host_client_handle_events(client_handle, portMAX_DELAY);
-        // Events werden hier verarbeitet
+    switch (xfer->status) {
+        case USB_TRANSFER_STATUS_COMPLETED:
+            ESP_LOGD(TAG, "Transfer completed: %d bytes", xfer->actual_num_bytes);
+            break;
+        case USB_TRANSFER_STATUS_STALL:
+            ESP_LOGW(TAG, "Transfer STALL (Gerät abgelehnt)");
+            s_xfer_result = ESP_ERR_INVALID_RESPONSE;
+            break;
+        case USB_TRANSFER_STATUS_TIMED_OUT:
+            ESP_LOGW(TAG, "Transfer Timeout");
+            s_xfer_result = ESP_ERR_TIMEOUT;
+            break;
+        case USB_TRANSFER_STATUS_NO_DEVICE:
+            ESP_LOGW(TAG, "Transfer NO_DEVICE");
+            s_xfer_result = ESP_ERR_INVALID_STATE;
+            s_device_connected = false;
+            s_device_handle = NULL;
+            break;
+        default:
+            ESP_LOGW(TAG, "Transfer status %d", xfer->status);
+            s_xfer_result = ESP_FAIL;
+            break;
     }
 
-    ESP_ERROR_CHECK(usb_host_client_deregister(client_handle));
-    vTaskDelete(NULL);
+    if (s_xfer_sem) {
+        xSemaphoreGive(s_xfer_sem);
+    }
 }
 
-// --- Device-Callback ---
+// ---------------------------------------------------------------------------
+// Device-Callback
+// ---------------------------------------------------------------------------
 static void device_callback(const usb_host_client_event_msg_t *event_msg,
                             void *arg)
 {
     switch (event_msg->event) {
-        case USB_HOST_CLIENT_EVENT_NEW_DEV:
-            ESP_LOGI(TAG, "Neues USB-Gerät erkannt");
+        case USB_HOST_CLIENT_EVENT_NEW_DEV: {
+            ESP_LOGI(TAG, "Neues USB-Gerät an Adresse %d", event_msg->new_dev.address);
+
+            // Device öffnen
+            esp_err_t err = usb_host_device_open(s_client_handle,
+                                                  event_msg->new_dev.address,
+                                                  &s_device_handle);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Device open fehlgeschlagen: %s", esp_err_to_name(err));
+                break;
+            }
+
+            // Interface 0 claimen (HID-Control)
+            err = usb_host_interface_claim(s_client_handle, s_device_handle, 0, 0);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Interface claim fehlgeschlagen: %s", esp_err_to_name(err));
+                usb_host_device_close(s_client_handle, s_device_handle);
+                s_device_handle = NULL;
+                break;
+            }
+
+            // Geräte-Info auslesen
+            usb_device_info_t dev_info;
+            err = usb_host_device_info(s_device_handle, &dev_info);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "Device: addr=%d speed=%d MPS=%d",
+                         dev_info.dev_addr, dev_info.speed, dev_info.bMaxPacketSize0);
+            }
+
+            s_device_connected = true;
             if (s_events) {
                 xEventGroupSetBits(s_events, EVENT_DEVICE_CONNECTED);
             }
+            ESP_LOGI(TAG, "MVSilicon-Gerät bereit (VID:0x%04X PID:0x%04X)",
+                     A800X_USB_VID, A800X_USB_PID);
             break;
+        }
 
         case USB_HOST_CLIENT_EVENT_DEV_GONE:
             ESP_LOGI(TAG, "USB-Gerät getrennt");
@@ -99,6 +145,32 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
 }
 
 // ---------------------------------------------------------------------------
+// Client-Task
+// ---------------------------------------------------------------------------
+static void usb_host_client_task(void *arg)
+{
+    ESP_LOGI(TAG, "USB-Host-Client-Task gestartet");
+
+    usb_host_client_config_t client_config = {
+        .is_synchronous = false,
+        .max_num_event_msg = 5,
+        .async = {
+            .client_event_callback = device_callback,
+            .callback_arg = NULL,
+        },
+    };
+    ESP_ERROR_CHECK(usb_host_client_register(&client_config, &s_client_handle));
+
+    while (1) {
+        usb_host_client_handle_events(s_client_handle, portMAX_DELAY);
+    }
+
+    // Wird nie erreicht
+    usb_host_client_deregister(s_client_handle);
+    vTaskDelete(NULL);
+}
+
+// ---------------------------------------------------------------------------
 // Öffentliche API
 // ---------------------------------------------------------------------------
 
@@ -108,9 +180,19 @@ esp_err_t usb_host_ctrl_init(void)
         return ESP_OK;
     }
 
-    // Event-Group erstellen
+    ESP_LOGI(TAG, "USB-Host initialisieren...");
+
+    // Event-Group
     s_events = xEventGroupCreate();
     if (!s_events) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Transfer-Semaphor
+    s_xfer_sem = xSemaphoreCreateBinary();
+    if (!s_xfer_sem) {
+        vEventGroupDelete(s_events);
+        s_events = NULL;
         return ESP_ERR_NO_MEM;
     }
 
@@ -122,21 +204,22 @@ esp_err_t usb_host_ctrl_init(void)
     esp_err_t err = usb_host_install(&host_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "usb_host_install fehlgeschlagen: %s", esp_err_to_name(err));
+        vSemaphoreDelete(s_xfer_sem);
+        s_xfer_sem = NULL;
         vEventGroupDelete(s_events);
         s_events = NULL;
         return err;
     }
 
-    // Client-Task starten
-    TaskHandle_t client_task = NULL;
+    // Client-Task starten (Core 0 für USB)
     xTaskCreatePinnedToCore(
         usb_host_client_task,
         "usb_client",
         A800X_USB_HOST_TASK_STACK_SIZE,
         NULL,
         A800X_USB_HOST_TASK_PRIORITY,
-        &client_task,
-        0  // Core 0 für USB
+        NULL,
+        0
     );
 
     s_initialized = true;
@@ -152,6 +235,8 @@ void usb_host_vbus_enable(bool enable)
                    enable ? A800X_VBUS_ENABLE_ACTIVE_HIGH
                           : !A800X_VBUS_ENABLE_ACTIVE_HIGH);
     ESP_LOGI(TAG, "VBUS %s", enable ? "EIN" : "AUS");
+#else
+    (void)enable;
 #endif
 }
 
@@ -165,7 +250,6 @@ esp_err_t usb_host_ctrl_wait_for_device(uint16_t vid, uint16_t pid,
     ESP_LOGI(TAG, "Warte auf Device VID:0x%04X PID:0x%04X (%d ms)...",
              vid, pid, timeout_ms);
 
-    // Auf Verbindung warten
     EventBits_t bits = xEventGroupWaitBits(
         s_events, EVENT_DEVICE_CONNECTED,
         pdTRUE, pdFALSE,
@@ -177,12 +261,7 @@ esp_err_t usb_host_ctrl_wait_for_device(uint16_t vid, uint16_t pid,
         return ESP_ERR_TIMEOUT;
     }
 
-    // Device konfigurieren
     if (s_device_handle) {
-        // Hier: Device-Konfiguration, Interface-Deskriptor auslesen,
-        // Endpunkte bestimmen
-        // (vereinfacht: für HID-Geräte den Control-Endpoint verwenden)
-        s_device_connected = true;
         ESP_LOGI(TAG, "Device verbunden und konfiguriert");
         return ESP_OK;
     }
@@ -190,60 +269,138 @@ esp_err_t usb_host_ctrl_wait_for_device(uint16_t vid, uint16_t pid,
     return ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t usb_host_ctrl_send_report(const uint8_t *data, uint16_t length)
+// ---------------------------------------------------------------------------
+// HID Control Transfers
+// ---------------------------------------------------------------------------
+
+static esp_err_t submit_control_transfer(
+    uint8_t bmRequestType, uint8_t bRequest,
+    uint16_t wValue, uint16_t wIndex,
+    uint16_t wLength,
+    const uint8_t *out_data, uint16_t out_len,
+    uint8_t *in_buffer, uint16_t in_buf_size,
+    uint16_t *in_len)
 {
-    if (!s_device_connected || !s_device_handle) {
+    if (!s_device_connected || !s_device_handle || !s_client_handle) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    // Report-Puffer vorbereiten: Daten + Null-Padding auf 256 Byte
-    memset(s_hid_report, 0, sizeof(s_hid_report));
-    if (length > sizeof(s_hid_report)) {
-        length = sizeof(s_hid_report);
+    // Transfer allozieren: 8 Byte Setup + 256 Byte Daten
+    usb_transfer_t *xfer;
+    esp_err_t err = usb_host_transfer_alloc(264, 0, &xfer);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Transfer alloc fehlgeschlagen: %s", esp_err_to_name(err));
+        return err;
     }
-    memcpy(s_hid_report, data, length);
 
-    // HID SET_REPORT via Control-Transfer
-    // bmRequestType: 0x21 (Host-to-Device, Class, Interface)
+    // Setup-Packet (8 Byte am Anfang des data_buffer)
+    usb_setup_packet_t *setup = (usb_setup_packet_t *)xfer->data_buffer;
+    setup->bmRequestType = bmRequestType;
+    setup->bRequest      = bRequest;
+    setup->wValue        = wValue;
+    setup->wIndex        = wIndex;
+    setup->wLength       = wLength;
+
+    // Daten nach dem Setup-Packet
+    if (out_data && out_len > 0) {
+        uint16_t copy_len = (out_len < 256) ? out_len : 256;
+        memset(xfer->data_buffer + 8, 0, 256);
+        memcpy(xfer->data_buffer + 8, out_data, copy_len);
+    } else {
+        memset(xfer->data_buffer + 8, 0, 256);
+    }
+
+    xfer->num_bytes       = 8 + wLength;
+    xfer->callback        = transfer_callback;
+    xfer->context         = NULL;
+    xfer->device_handle   = s_device_handle;
+    xfer->bEndpointAddress = 0;  // Control EP 0
+    xfer->timeout_ms      = 5000;
+    xfer->flags           = 0;
+
+    // Semaphor zurücksetzen
+    xSemaphoreTake(s_xfer_sem, 0);
+    s_xfer_result = ESP_ERR_TIMEOUT;
+    s_xfer_actual = 0;
+
+    // Control Transfer submit
+    err = usb_host_transfer_submit_control(s_client_handle, xfer);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Transfer submit fehlgeschlagen: %s", esp_err_to_name(err));
+        usb_host_transfer_free(xfer);
+        return err;
+    }
+
+    // Auf Completion warten (5 s Timeout)
+    if (xSemaphoreTake(s_xfer_sem, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Transfer-Timeout (5 s)");
+        usb_host_transfer_free(xfer);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    // Ergebnis kopieren
+    err = s_xfer_result;
+    if (err == ESP_OK && in_buffer && in_buf_size > 0 && s_xfer_actual > 8) {
+        uint16_t resp_len = s_xfer_actual - 8;  // Setup-Packet abziehen
+        if (resp_len > in_buf_size) resp_len = in_buf_size;
+        memcpy(in_buffer, xfer->data_buffer + 8, resp_len);
+        if (in_len) *in_len = resp_len;
+    } else if (in_len) {
+        *in_len = 0;
+    }
+
+    usb_host_transfer_free(xfer);
+    return err;
+}
+
+esp_err_t usb_host_ctrl_send_report(const uint8_t *data, uint16_t length)
+{
+    // HID SET_REPORT: Host-to-Device, Class, Interface
+    // bmRequestType: 0x21
     // bRequest: 0x09 (SET_REPORT)
     // wValue: 0x0200 (Report Type = Output, Report ID = 0)
-    // wIndex: 0x0000 (Interface Number)
+    // wIndex: 0x0000 (Interface 0)
     // wLength: 256
-    usb_device_info_t dev_info;
-    usb_host_device_info(s_device_handle, &dev_info);
 
-    // USB Control Transfer
-    // (Vereinfacht: Hier müsste der tatsächliche Control-Transfer
-    //  über die USB-Host-API erfolgen)
-    ESP_LOGD(TAG, "Sende HID Report (%d Bytes Nutzdaten)", length);
+    ESP_LOGD(TAG, "HID SET_REPORT (%d Bytes Nutzdaten)", length);
 
-    // TODO: Tatsächlichen USB Control Transfer implementieren
-    // usb_host_transfer_alloc / usb_host_transfer_submit / usb_host_transfer_free
-
-    return ESP_OK;
+    return submit_control_transfer(
+        0x21,       // bmRequestType: Host-to-Device, Class, Interface
+        0x09,       // bRequest: SET_REPORT
+        0x0200,     // wValue: Report Type Output, Report ID 0
+        0x0000,     // wIndex: Interface 0
+        256,        // wLength
+        data,       // out_data
+        length,     // out_len
+        NULL,       // in_buffer
+        0,          // in_buf_size
+        NULL        // in_len
+    );
 }
 
 esp_err_t usb_host_ctrl_get_report(uint8_t *buffer, uint16_t *out_length)
 {
-    if (!s_device_connected || !s_device_handle) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // HID GET_REPORT via Control-Transfer
-    // bmRequestType: 0xA1 (Device-to-Host, Class, Interface)
+    // HID GET_REPORT: Device-to-Host, Class, Interface
+    // bmRequestType: 0xA1
     // bRequest: 0x01 (GET_REPORT)
-    // wValue: 0x0200 (Report Type = Input, Report ID = 0)
-    // wIndex: 0x0000 (Interface Number)
+    // wValue: 0x0100 (Report Type = Input, Report ID = 0)
+    // wIndex: 0x0000 (Interface 0)
     // wLength: 256
 
-    // TODO: Tatsächlichen USB Control Transfer implementieren
-    // Vereinfacht: 256 Byte lesen
+    ESP_LOGD(TAG, "HID GET_REPORT");
 
-    if (out_length) {
-        *out_length = 0;
-    }
-
-    return ESP_OK;
+    return submit_control_transfer(
+        0xA1,       // bmRequestType: Device-to-Host, Class, Interface
+        0x01,       // bRequest: GET_REPORT
+        0x0100,     // wValue: Report Type Input, Report ID 0
+        0x0000,     // wIndex: Interface 0
+        256,        // wLength
+        NULL,       // out_data
+        0,          // out_len
+        buffer,     // in_buffer
+        256,        // in_buf_size
+        out_length  // in_len
+    );
 }
 
 bool usb_host_ctrl_is_device_connected(void)
@@ -253,12 +410,22 @@ bool usb_host_ctrl_is_device_connected(void)
 
 void usb_host_ctrl_deinit(void)
 {
-    if (!s_initialized) {
-        return;
+    if (!s_initialized) return;
+
+    ESP_LOGI(TAG, "USB-Host deinitialisieren...");
+
+    if (s_device_handle) {
+        usb_host_interface_release(s_client_handle, s_device_handle, 0);
+        usb_host_device_close(s_client_handle, s_device_handle);
+        s_device_handle = NULL;
     }
 
-    s_device_handle = NULL;
     s_device_connected = false;
+
+    if (s_xfer_sem) {
+        vSemaphoreDelete(s_xfer_sem);
+        s_xfer_sem = NULL;
+    }
 
     if (s_events) {
         vEventGroupDelete(s_events);
@@ -267,6 +434,5 @@ void usb_host_ctrl_deinit(void)
 
     usb_host_uninstall();
     s_initialized = false;
-
     ESP_LOGI(TAG, "USB-Host deinitialisiert");
 }

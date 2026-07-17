@@ -147,6 +147,12 @@ esp_err_t dsp_model_update_preeq(const mvs_preeq_state_t *state);
  */
 esp_err_t dsp_model_update_drc(const mvs_drc_packed_state_t *state);
 
+// ---------------------------------------------------------------------------
+// Globaler DSP-Status (definiert in main.c)
+// ---------------------------------------------------------------------------
+extern bool g_dsp_connected;
+extern bool g_dsp_ns_state;
+
 #ifdef __cplusplus
 }
 #endif

@@ -12,11 +12,15 @@
   const sysHostname = $('sys-hostname');
   const sysMac = $('sys-mac');
   const sysIp = $('sys-ip');
+  const sysApIp = $('sys-ap-ip');
   const sysVersion = $('sys-version');
+  const dspSection = $('dsp-controls');
+  const dspUnavailable = $('dsp-unavailable');
   const preeqDetails = $('preeq-details');
   const preeqFilters = $('preeq-filters');
   const otaUrl = $('ota-url');
   const otaProgress = $('ota-progress');
+  const nsStatus = $('ns-readback');
 
   // --- API Helpers ---
   async function api(method, path, body) {
@@ -33,29 +37,75 @@
   async function updateStatus() {
     try {
       const data = await api('GET', '/status');
-      dspStatus.textContent = data.dsp_connected ? 'DSP' : 'DSP ✗';
-      dspStatus.className = 'status-dot ' + (data.dsp_connected ? 'dot-on' : 'dot-off');
-      wifiStatus.textContent = data.wifi_connected ? 'WiFi' : 'WiFi ✗';
-      wifiStatus.className = 'status-dot ' + (data.wifi_connected ? 'dot-on' : 'dot-off');
-      deviceIp.textContent = data.ip || '-';
+
+      // DSP-Status: grün nur aus bestätigtem Readback
+      if (data.dsp_connected) {
+        dspStatus.textContent = 'DSP ✓';
+        dspStatus.className = 'status-dot dot-on';
+        dspSection.classList.remove('hidden');
+        if (dspUnavailable) dspUnavailable.classList.add('hidden');
+        if (data.dsp_noise_suppressor !== undefined) {
+          const nsEl = $('noise-suppressor');
+          if (nsEl) nsEl.checked = data.dsp_noise_suppressor;
+        }
+      } else {
+        dspStatus.textContent = 'DSP ✗';
+        dspStatus.className = 'status-dot dot-off';
+        dspSection.classList.add('hidden');
+        if (dspUnavailable) dspUnavailable.classList.remove('hidden');
+      }
+
+      // WiFi-Status: AP + STA getrennt
+      if (data.sta_connected) {
+        wifiStatus.textContent = 'STA ✓';
+        wifiStatus.className = 'status-dot dot-on';
+      } else {
+        wifiStatus.textContent = 'AP';
+        wifiStatus.className = 'status-dot dot-warn';
+      }
+
+      // IP: AP oder STA
+      if (data.sta_ip) {
+        deviceIp.textContent = 'STA: ' + data.sta_ip;
+      } else {
+        deviceIp.textContent = 'AP: ' + data.ap_ip;
+      }
+
+      // System-Info
       sysHostname.textContent = data.hostname || '-';
       sysMac.textContent = data.mac || '-';
-      sysIp.textContent = data.ip || '-';
+      sysApIp.textContent = data.ap_ip || '-';
+      sysIp.textContent = data.sta_ip || data.ap_ip || '-';
       sysVersion.textContent = data.version || '-';
     } catch (e) {
       console.error('Status update failed:', e);
     }
   }
 
-  // --- DSP State ---
+  // --- DSP State (nur bei Connected ausgeführt) ---
   async function updateDspState() {
     try {
       const data = await api('GET', '/dsp');
+
+      if (data.dsp === 'nicht verfügbar') {
+        dspSection.classList.add('hidden');
+        if (dspUnavailable) dspUnavailable.classList.remove('hidden');
+        return;
+      }
+
+      dspSection.classList.remove('hidden');
+      if (dspUnavailable) dspUnavailable.classList.add('hidden');
+
       $('noise-suppressor').checked = data.noise_suppressor;
       $('virtual-bass').checked = data.virtual_bass;
       $('silence-detector').checked = data.silence_detector;
       $('preeq-enable').checked = data.preeq_enabled;
       $('drc-enable').checked = data.drc_enabled;
+
+      // Noise Suppressor Readback-Status
+      if (nsStatus) {
+        nsStatus.textContent = 'NS: ' + (data.noise_suppressor ? 'EIN' : 'AUS');
+      }
 
       // PreEQ Filters
       if (data.preeq_filters && data.preeq_filters.length > 0) {
@@ -88,11 +138,6 @@
     });
   });
 
-  // --- WiFi Reconnect ---
-  async function handleWifiConnect(ssid, password) {
-    await api('POST', '/wifi/connect', { ssid, password });
-  }
-
   // --- OTA Update ---
   $('btn-ota-update').addEventListener('click', async () => {
     const url = otaUrl.value.trim();
@@ -123,7 +168,6 @@
 
   $('btn-profile-load').addEventListener('click', async () => {
     const data = await api('GET', '/profiles');
-    // UI für Profilauswahl (vereinfacht)
     alert('Profile: ' + JSON.stringify(data.profiles || []));
   });
 
@@ -153,7 +197,8 @@
   async function init() {
     await updateStatus();
     await updateDspState();
-    setInterval(updateStatus, 10000);
+    setInterval(updateStatus, 5000);
+    setInterval(updateDspState, 15000);
   }
 
   document.addEventListener('DOMContentLoaded', init);

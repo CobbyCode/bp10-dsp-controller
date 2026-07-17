@@ -4,8 +4,8 @@
 // api_handlers.c — REST-API-Endpunkte
 //
 // Endpunkte:
-//   GET  /api/status          – Systemstatus (DSP, WiFi, IP)
-//   GET  /api/dsp             – Aktuellen DSP-Zustand abrufen
+//   GET  /api/status          – Systemstatus (DSP, WiFi AP/STA, IP)
+//   GET  /api/dsp             – DSP-Zustand (nur bei Connected)
 //   POST /api/dsp/noise       – Noise Suppressor ein/aus
 //   POST /api/dsp/bass        – Virtual Bass ein/aus
 //   POST /api/dsp/silence     – Silence Detector ein/aus
@@ -15,7 +15,7 @@
 //   POST /api/dsp/readback    – DSP-Zustand vom Gerät lesen
 //   POST /api/dsp/preeq/set   – PreEQ-Filter setzen
 //   POST /api/dsp/drc/set     – DRC setzen
-//   GET  /api/wifi/status     – WiFi-Status
+//   GET  /api/wifi/status     – WiFi-Status (AP + STA getrennt)
 //   POST /api/wifi/connect    – WiFi-Verbindung herstellen
 //   POST /api/wifi/ap/start   – SoftAP starten
 //   GET  /api/profiles        – Gespeicherte Profile auflisten
@@ -96,24 +96,34 @@ static esp_err_t handler_status_get(httpd_req_t *req)
     cJSON_AddStringToObject(root, "version", APP_VERSION);
 
     // DSP
-    cJSON_AddBoolToObject(root, "dsp_connected",
-                          usb_host_ctrl_is_device_connected());
-
-    // WiFi
-    char ip[16];
-    cJSON_AddBoolToObject(root, "wifi_connected",
-                          wifi_manager_is_connected());
-    if (wifi_manager_get_ip_str(ip, sizeof(ip)) == ESP_OK) {
-        cJSON_AddStringToObject(root, "ip", ip);
+    bool dsp_ok = usb_host_ctrl_is_device_connected();
+    cJSON_AddBoolToObject(root, "dsp_connected", dsp_ok);
+    if (dsp_ok) {
+        cJSON_AddBoolToObject(root, "dsp_noise_suppressor", g_dsp_ns_state);
     }
 
+    // MAC
     char mac[18];
     wifi_manager_get_mac_str(mac);
     cJSON_AddStringToObject(root, "mac", mac);
 
+    // Hostname
     char hostname[32];
     wifi_manager_generate_hostname(hostname, sizeof(hostname));
     cJSON_AddStringToObject(root, "hostname", hostname);
+
+    // SoftAP
+    cJSON_AddStringToObject(root, "ap_ssid", hostname);
+    cJSON_AddStringToObject(root, "ap_ip", "192.168.4.1");
+    cJSON_AddStringToObject(root, "ap_auth", "offen");
+
+    // Station (Heim-WLAN)
+    char ip[16];
+    bool sta_connected = wifi_manager_is_connected();
+    cJSON_AddBoolToObject(root, "sta_connected", sta_connected);
+    if (sta_connected && wifi_manager_get_ip_str(ip, sizeof(ip)) == ESP_OK) {
+        cJSON_AddStringToObject(root, "sta_ip", ip);
+    }
 
     char *json = cJSON_PrintUnformatted(root);
     esp_err_t ret = send_json_response(req, 200, json);
@@ -124,6 +134,18 @@ static esp_err_t handler_status_get(httpd_req_t *req)
 
 static esp_err_t handler_dsp_get(httpd_req_t *req)
 {
+    // Nur bei verbundenem DSP sinnvoll
+    if (!usb_host_ctrl_is_device_connected()) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "dsp", "nicht verfügbar");
+        cJSON_AddStringToObject(root, "error", "Kein DSP angeschlossen");
+        char *json = cJSON_PrintUnformatted(root);
+        esp_err_t ret = send_json_response(req, 200, json);
+        free(json);
+        cJSON_Delete(root);
+        return ret;
+    }
+
     dsp_profile_t profile;
     esp_err_t err = dsp_model_readback(&profile);
     if (err != ESP_OK) {
@@ -131,25 +153,16 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
     }
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "noise_suppressor", profile.noise_suppressor_enabled);
-    cJSON_AddBoolToObject(root, "virtual_bass", profile.virtual_bass_enabled);
-    cJSON_AddBoolToObject(root, "silence_detector", profile.silence_detector_enabled);
-    cJSON_AddBoolToObject(root, "preeq_enabled", profile.preeq.block_enabled != 0);
-    cJSON_AddBoolToObject(root, "drc_enabled", profile.drc.enabled != 0);
-
-    cJSON_AddNumberToObject(root, "preeq_pre_gain_raw", profile.preeq.pre_gain_raw);
-
-    // PreEQ-Filter als Array
-    cJSON *filters = cJSON_AddArrayToObject(root, "preeq_filters");
-    for (int i = 0; i < 10; i++) {
-        cJSON *f = cJSON_CreateObject();
-        cJSON_AddBoolToObject(f, "enabled", profile.preeq.filters[i].enabled != 0);
-        cJSON_AddNumberToObject(f, "type", profile.preeq.filters[i].type);
-        cJSON_AddNumberToObject(f, "frequency_hz", profile.preeq.filters[i].frequency_hz);
-        cJSON_AddNumberToObject(f, "q_raw", profile.preeq.filters[i].q_raw);
-        cJSON_AddNumberToObject(f, "gain_raw", profile.preeq.filters[i].gain_raw);
-        cJSON_AddItemToArray(filters, f);
-    }
+    cJSON_AddBoolToObject(root, "noise_suppressor",
+                          profile.noise_suppressor_enabled);
+    cJSON_AddBoolToObject(root, "virtual_bass",
+                          profile.virtual_bass_enabled);
+    cJSON_AddBoolToObject(root, "silence_detector",
+                          profile.silence_detector_enabled);
+    cJSON_AddBoolToObject(root, "preeq_enabled",
+                          profile.preeq.block_enabled != 0);
+    cJSON_AddBoolToObject(root, "drc_enabled",
+                          profile.drc.enabled != 0);
 
     char *json = cJSON_PrintUnformatted(root);
     esp_err_t ret = send_json_response(req, 200, json);
@@ -160,6 +173,10 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
 
 static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
 {
+    if (!usb_host_ctrl_is_device_connected()) {
+        return send_error(req, 503, "DSP nicht verfügbar");
+    }
+
     char buf[64];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) return send_error(req, 400, "Keine Daten");
@@ -185,6 +202,10 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
 
 static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
 {
+    if (!usb_host_ctrl_is_device_connected()) {
+        return send_error(req, 503, "DSP nicht verfügbar");
+    }
+
     char buf[64];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) return send_error(req, 400, "Keine Daten");
@@ -211,11 +232,22 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
 static esp_err_t handler_wifi_status_get(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
+
+    // SoftAP
+    char hostname[32];
+    wifi_manager_generate_hostname(hostname, sizeof(hostname));
+    cJSON_AddStringToObject(root, "ap_ssid", hostname);
+    cJSON_AddStringToObject(root, "ap_ip", "192.168.4.1");
+    cJSON_AddStringToObject(root, "ap_auth", "offen");
+
+    // Station
     char ip[16];
-    cJSON_AddBoolToObject(root, "connected", wifi_manager_is_connected());
-    if (wifi_manager_get_ip_str(ip, sizeof(ip)) == ESP_OK) {
-        cJSON_AddStringToObject(root, "ip", ip);
+    bool sta_connected = wifi_manager_is_connected();
+    cJSON_AddBoolToObject(root, "sta_connected", sta_connected);
+    if (sta_connected && wifi_manager_get_ip_str(ip, sizeof(ip)) == ESP_OK) {
+        cJSON_AddStringToObject(root, "sta_ip", ip);
     }
+
     char *json = cJSON_PrintUnformatted(root);
     esp_err_t err = send_json_response(req, 200, json);
     free(json);
@@ -252,10 +284,9 @@ static esp_err_t handler_device_reset_post(httpd_req_t *req)
     wifi_manager_deinit();
     mdns_service_stop();
     usb_host_ctrl_deinit();
-    // System neustarten (vereinfacht)
     ESP_LOGI(TAG, "Factory Reset – neustarten...");
     esp_restart();
-    return ESP_OK; // unreachable
+    return ESP_OK;
 }
 
 static esp_err_t handler_ota_update_post(httpd_req_t *req)

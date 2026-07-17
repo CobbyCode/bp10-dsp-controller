@@ -8,6 +8,7 @@
   --text-dim: #999;
   --green: #2ecc71;
   --red: #e74c3c;
+  --orange: #f39c12;
   --radius: 8px;
 }
 
@@ -51,6 +52,7 @@ h3 { font-size: 1rem; margin-bottom: 8px; color: var(--text-dim); }
 }
 .dot-on { background: var(--green); color: #000; }
 .dot-off { background: var(--red); color: #fff; }
+.dot-warn { background: var(--orange); color: #000; }
 .ip { font-size: 0.75rem; color: var(--text-dim); }
 
 section {
@@ -58,6 +60,36 @@ section {
   border-radius: var(--radius);
   padding: 16px;
   margin-bottom: 16px;
+}
+
+/* DSP nicht verfügbar */
+.info-section {
+  text-align: center;
+}
+.unavailable-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text-dim);
+}
+.unavailable-notice .icon {
+  font-size: 2rem;
+}
+.unavailable-notice .sub {
+  font-size: 0.8rem;
+}
+
+/* Readback-Badge */
+.readback-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  background: var(--surface2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: var(--green);
+  margin-bottom: 8px;
 }
 
 .control-grid {
