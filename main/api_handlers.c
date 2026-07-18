@@ -21,7 +21,8 @@
 //   GET  /api/wifi/scan       – Scan-Ergebnisse abrufen
 //   POST /api/device/name     – Gerätenamen setzen
 //   POST /api/device/reset    – Factory Reset (NVS löschen, kein DSP-Flash-Save)
-//   POST /api/ota/update      – OTA-Update starten
+//   POST /api/ota/upload      – Firmware-Binary hochladen
+//   GET  /api/ota/status       – OTA-Status (Fortschritt, Fehler, Partition)
 //
 
 #include "api_handlers.h"
@@ -1041,32 +1042,116 @@ static esp_err_t handler_device_reset_post(httpd_req_t *req)
 }
 
 // ---------------------------------------------------------------------------
-// OTA
+// OTA-Status
 // ---------------------------------------------------------------------------
 
-static esp_err_t handler_ota_update_post(httpd_req_t *req)
+static esp_err_t handler_ota_status_get(httpd_req_t *req)
 {
-    char buf[256];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) return send_error(req, 400, "No data");
-    buf[ret] = '\0';
+    char *json = ota_get_status_json();
+    if (!json) {
+        return send_error(req, 500, "OTA status unavailable");
+    }
+    esp_err_t ret = send_json_response(req, 200, json);
+    free(json);
+    return ret;
+}
 
-    cJSON *json = cJSON_Parse(buf);
-    if (!json) return send_error(req, 400, "Invalid JSON");
+// ---------------------------------------------------------------------------
+// OTA-Upload (Binary Stream)
+// ---------------------------------------------------------------------------
 
-    cJSON *url = cJSON_GetObjectItem(json, "url");
-    if (!cJSON_IsString(url)) {
-        cJSON_Delete(json);
-        return send_error(req, 400, "Missing 'url' field");
+static esp_err_t handler_ota_upload_post(httpd_req_t *req)
+{
+    // Prüfen ob bereits ein OTA-Vorgang läuft
+    if (ota_is_busy()) {
+        return send_error(req, 409, "OTA already in progress");
     }
 
-    esp_err_t err = ota_update_start(url->valuestring);
-    cJSON_Delete(json);
+    // Content-Length aus Header lesen
+    char content_length_str[32];
+    bool has_length = false;
+    size_t content_length = 0;
+    if (httpd_req_get_hdr_value_str(req, "Content-Length",
+                                     content_length_str, sizeof(content_length_str)) == ESP_OK) {
+        content_length = (size_t)strtoul(content_length_str, NULL, 10);
+        has_length = (content_length > 0);
+    }
 
+    if (!has_length) {
+        return send_error(req, 411, "Content-Length required");
+    }
+
+    ESP_LOGI(TAG, "OTA-Upload: Content-Length=%zu", content_length);
+
+    // Upload starten
+    esp_err_t err = ota_upload_begin(content_length);
     if (err != ESP_OK) {
-        return send_error(req, 500, "OTA update failed");
+        ota_status_t st;
+        ota_get_status(&st);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "OTA begin failed: %s",
+                 st.last_error[0] ? st.last_error : "unknown error");
+        return send_error(req, 400, msg);
     }
-    return send_ok(req, NULL);
+
+    // Daten in Blöcken empfangen und schreiben
+    // HTTP-Server-Puffer ist typischerweise 512-1024 Bytes
+    size_t remaining = content_length;
+    uint8_t buf[1024];
+
+    while (remaining > 0) {
+        size_t to_read = (remaining < sizeof(buf)) ? remaining : sizeof(buf);
+        int received = httpd_req_recv(req, (char *)buf, (int)to_read);
+        if (received <= 0) {
+            ESP_LOGW(TAG, "OTA-Upload: Empfang abgebrochen nach %zu/%zu Bytes",
+                     content_length - remaining, content_length);
+            ota_upload_abort();
+            if (received == 0) {
+                return send_error(req, 400, "Upload aborted (connection closed)");
+            }
+            return send_error(req, 500, "Upload aborted (recv error)");
+        }
+
+        err = ota_upload_write(buf, (size_t)received);
+        if (err != ESP_OK) {
+            ota_upload_abort();
+            return send_error(req, 500, "OTA write failed");
+        }
+
+        remaining -= (size_t)received;
+    }
+
+    // Upload abschließen
+    err = ota_upload_finish();
+    if (err != ESP_OK) {
+        ota_status_t st;
+        ota_get_status(&st);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "OTA validation failed: %s",
+                 st.last_error[0] ? st.last_error : esp_err_to_name(err));
+        return send_error(req, 400, msg);
+    }
+
+    // Erfolg melden – System startet in 2s neu
+    ota_status_t st;
+    ota_get_status(&st);
+    cJSON *extra = cJSON_CreateObject();
+    cJSON_AddStringToObject(extra, "message", "Update successful – rebooting");
+    cJSON_AddStringToObject(extra, "new_version", st.uploaded_version);
+    cJSON_AddStringToObject(extra, "target_partition", st.target_partition_label);
+    cJSON_AddNumberToObject(extra, "reboot_ms", 2000);
+
+    char *resp = cJSON_PrintUnformatted(extra);
+    cJSON_Delete(extra);
+    esp_err_t ret = send_json_response(req, 200, resp);
+    free(resp);
+
+    // Verzögerten Neustart starten
+    ESP_LOGI(TAG, "OTA-Update vollständig – Neustart in 2 Sekunden");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+
+    return ret; // unreachable
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,7 +1183,8 @@ void api_handlers_register(http_server_handle_t server)
         {.uri = "/api/wifi/scan",    .method = HTTP_GET,  .handler = handler_wifi_scan_get,    .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/device/name",  .method = HTTP_POST, .handler = handler_device_name_post, .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/device/reset", .method = HTTP_POST, .handler = handler_device_reset_post, .user_ctx = NULL, .is_websocket = false},
-        {.uri = "/api/ota/update",   .method = HTTP_POST, .handler = handler_ota_update_post,  .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/ota/upload",   .method = HTTP_POST, .handler = handler_ota_upload_post,  .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/ota/status",    .method = HTTP_GET,  .handler = handler_ota_status_get,   .user_ctx = NULL, .is_websocket = false},
     };
 
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

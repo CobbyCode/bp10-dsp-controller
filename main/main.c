@@ -63,15 +63,21 @@ void app_main(void)
     // 1. NVS initialisieren
     init_nvs();
 
-    // 2. USB-Host starten (nicht blockierend, timeout 5 s)
+    // 2. OTA initialisieren (Partition-Check, Rollback-Status)
+    ota_init();
+
+    // 3. Rollback-Selbsttest (falls PENDING_VERIFY)
+    ota_perform_self_test();
+
+    // 4. USB-Host starten (nicht blockierend, timeout 5 s)
     init_usb_host();
 
-    // 3. Netzwerk starten: WiFi + mDNS + HTTP
+    // 5. Netzwerk starten: WiFi + mDNS + HTTP
     //    Läuft immer, auch ohne DSP
     init_network();
     init_http_server();
 
-    // 4. Falls bereits verbunden: gespeicherte Konfiguration anwenden
+    // 6. Falls bereits verbunden: gespeicherte Konfiguration anwenden
     //    oder nur lesen, falls keine gespeichert ist.
     if (g_dsp_connected) {
         dsp_boot_apply_task(NULL);

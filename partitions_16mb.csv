@@ -1,9 +1,9 @@
-# ESP32-S3 4 MB flash — OTA partition table with rollback (target board)
+# ESP32-S3 16 MB flash — OTA partition table with rollback
 # NVS preserved at 0x9000 (same offset+size as v0.3.0 to keep DSP + WiFi config)
 # Name,     Type, SubType,  Offset,   Size,     Flags
 nvs,        data, nvs,      0x9000,   0x6000,
 otadata,    data, ota,      0xF000,   0x2000,
 phy_init,   data, phy,      0x11000,  0x1000,
-ota_0,      app,  ota_0,    0x20000,  1408K,
-ota_1,      app,  ota_1,    ,         1408K,
-spiffs,     data, spiffs,   ,         960K,
+ota_0,      app,  ota_0,    0x20000,  5M,
+ota_1,      app,  ota_1,    ,         5M,
+spiffs,     data, spiffs,   ,         ,

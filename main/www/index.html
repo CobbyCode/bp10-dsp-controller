@@ -164,16 +164,49 @@
     </div>
   </section>
 
-  <!-- OTA Update -->
+  <!-- Firmware Update -->
   <section id="ota">
     <h2>Firmware Update</h2>
-    <div class="input-row">
-      <input type="url" id="ota-url" placeholder="https://.../firmware.bin">
-      <button id="btn-ota-update" class="btn btn-primary">Update</button>
+
+    <!-- Current + uploaded version info -->
+    <div class="info-row" id="ota-versions">
+      <span class="label">Current:</span>
+      <span id="ota-current-version">-</span>
+      <span class="label" style="margin-left:16px">Running on:</span>
+      <span id="ota-running-partition">-</span>
     </div>
-    <div id="ota-progress" class="hidden progress-bar">
-      <div class="progress-fill"></div>
+    <div class="info-row hidden" id="ota-new-info">
+      <span class="label">New:</span>
+      <span id="ota-new-version">-</span>
+      <span class="label" style="margin-left:16px">Target:</span>
+      <span id="ota-target-partition">-</span>
     </div>
+
+    <!-- File upload -->
+    <div class="input-row" id="ota-upload-form">
+      <input type="file" id="ota-file-input" accept=".bin" style="display:none">
+      <button id="btn-ota-select" class="btn btn-secondary">Choose .bin File</button>
+      <span id="ota-file-name" class="file-hint">No file selected</span>
+      <span id="ota-file-size" class="file-hint"></span>
+    </div>
+
+    <!-- Upload confirm + progress -->
+    <div class="input-row hidden" id="ota-confirm-row">
+      <button id="btn-ota-install" class="btn btn-primary">Install Firmware</button>
+      <button id="btn-ota-cancel" class="btn btn-secondary">Cancel</button>
+    </div>
+    <div class="hidden" id="ota-progress-area">
+      <div class="progress-bar">
+        <div class="progress-fill" id="ota-progress-fill"></div>
+      </div>
+      <div class="progress-text">
+        <span id="ota-progress-pct">0%</span>
+        <span id="ota-progress-bytes">0 / 0</span>
+      </div>
+    </div>
+
+    <!-- Result -->
+    <div class="hidden" id="ota-result"></div>
   </section>
 
   <!-- Factory Reset -->

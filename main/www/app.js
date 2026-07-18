@@ -20,8 +20,6 @@
   const dspSection = $('dsp-controls');
   const dspUnavailable = $('dsp-unavailable');
   const preeqFilters = $('preeq-filters');
-  const otaUrl = $('ota-url');
-  const otaProgress = $('ota-progress');
   const noiseState = $('noise-state');
   const noiseMessage = $('noise-message');
   const noiseEditor = $('noise-module').querySelector('.module-editor');
@@ -61,6 +59,13 @@
   let wifiScanPolling = false;
 
   // --- API Helpers ---
+  function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(2) + ' MB';
+  }
+
   async function api(method, path, body) {
     const opts = { method, headers: {} };
     if (body) {
@@ -133,17 +138,17 @@
           connectionBanner.classList.remove('hidden');
           connectionBanner.className = 'connection-banner is-transition';
           connectionBannerText.textContent =
-            'Setup-WLAN wird in ' + data.ap_shutdown_remaining_s +
-            ' Sekunden abgeschaltet';
+            'Setup Wi-Fi shuts down in ' + data.ap_shutdown_remaining_s +
+            ' seconds';
         } else if (data.sta_connected) {
           connectionBanner.classList.remove('hidden');
           connectionBanner.className = 'connection-banner is-connected';
           connectionBannerText.innerHTML =
-            '✓ Mit Heimnetz verbunden · ' +
+            '✓ Connected to home network · ' +
             (data.sta_ssid || '') + ' · ' +
             (data.sta_ip || '') + '<br>' +
             '<small>WebGUI: <a href="http://' + (data.mdns_address || '') +
-            '">' + (data.mdns_address || '') + '</a> oder ' +
+            '">' + (data.mdns_address || '') + '</a> or ' +
             (data.sta_ip || '') + '</small>';
         }
       } else {
@@ -789,20 +794,173 @@
     });
   });
 
-  // --- OTA Update ---
-  $('btn-ota-update').addEventListener('click', async () => {
-    const url = otaUrl.value.trim();
-    if (!url) return;
-    otaProgress.classList.remove('hidden');
-    $('btn-ota-update').disabled = true;
-    try {
-      await api('POST', '/ota/update', { url });
-    } catch (e) {
-      alert('OTA update failed: ' + e.message);
-    }
-    otaProgress.classList.add('hidden');
-    $('btn-ota-update').disabled = false;
+  // --- OTA Firmware Update ---
+  let otaSelectedFile = null;
+
+  // File selection
+  $('btn-ota-select').addEventListener('click', () => {
+    $('ota-file-input').click();
   });
+
+  $('ota-file-input').addEventListener('change', () => {
+    const file = $('ota-file-input').files[0];
+    if (!file) {
+      otaSelectedFile = null;
+      $('ota-file-name').textContent = 'No file selected';
+      $('ota-file-size').textContent = '';
+      $('ota-confirm-row').classList.add('hidden');
+      $('ota-new-info').classList.add('hidden');
+      return;
+    }
+    otaSelectedFile = file;
+    $('ota-file-name').textContent = file.name;
+    $('ota-file-size').textContent = formatBytes(file.size);
+    $('ota-confirm-row').classList.remove('hidden');
+  });
+
+  // Cancel selection
+  $('btn-ota-cancel').addEventListener('click', () => {
+    otaSelectedFile = null;
+    $('ota-file-input').value = '';
+    $('ota-file-name').textContent = 'No file selected';
+    $('ota-file-size').textContent = '';
+    $('ota-confirm-row').classList.add('hidden');
+    $('ota-new-info').classList.add('hidden');
+    $('ota-result').classList.add('hidden');
+  });
+
+  // Install firmware
+  $('btn-ota-install').addEventListener('click', async () => {
+    if (!otaSelectedFile) return;
+
+    // Double confirmation
+    if (!confirm('Install firmware "' + otaSelectedFile.name + '"?\n\nThe device will restart after installation.')) {
+      return;
+    }
+
+    const form = $('ota-upload-form');
+    const confirmRow = $('ota-confirm-row');
+    const progressArea = $('ota-progress-area');
+    const resultDiv = $('ota-result');
+
+    // Lock UI
+    form.querySelectorAll('button').forEach(b => b.disabled = true);
+    confirmRow.querySelectorAll('button').forEach(b => b.disabled = true);
+    $('btn-factory-reset').disabled = true;
+    progressArea.classList.remove('hidden');
+    resultDiv.classList.add('hidden');
+    resultDiv.className = '';
+
+    try {
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          $('ota-progress-pct').textContent = pct + '%';
+          $('ota-progress-bytes').textContent =
+            formatBytes(e.loaded) + ' / ' + formatBytes(e.total);
+          $('ota-progress-fill').style.width = pct + '%';
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+          try {
+            const resp = JSON.parse(xhr.responseText);
+            resultDiv.textContent = '✓ ' + (resp.message || 'Update successful')
+              + ' \u2014 Rebooting...';
+            resultDiv.className = 'form-message success';
+          } catch (_) {
+            resultDiv.textContent = '✓ Update successful \u2014 Rebooting...';
+            resultDiv.className = 'form-message success';
+          }
+          resultDiv.classList.remove('hidden');
+
+          // Countdown to reconnect
+          let sec = 5;
+          const timer = setInterval(() => {
+            sec--;
+            resultDiv.textContent = '✓ Update successful \u2014 '
+              + 'Rebooting... (reconnect in ' + sec + 's)';
+            if (sec <= 0) clearInterval(timer);
+          }, 1000);
+        } else {
+          let errMsg = 'Upload failed (HTTP ' + xhr.status + ')';
+          try {
+            const resp = JSON.parse(xhr.responseText);
+            errMsg = resp.error || resp.message || errMsg;
+          } catch (_) {}
+          resultDiv.textContent = '✗ ' + errMsg;
+          resultDiv.className = 'form-message error';
+          resultDiv.classList.remove('hidden');
+        }
+
+        // Unlock UI (on failure; on success device reboots)
+        if (xhr.status !== 200) {
+          form.querySelectorAll('button').forEach(b => b.disabled = false);
+          confirmRow.querySelectorAll('button').forEach(b => b.disabled = false);
+          $('btn-factory-reset').disabled = false;
+          progressArea.classList.add('hidden');
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        resultDiv.textContent = '✗ Network error \u2014 check connection';
+        resultDiv.className = 'form-message error';
+        resultDiv.classList.remove('hidden');
+        form.querySelectorAll('button').forEach(b => b.disabled = false);
+        confirmRow.querySelectorAll('button').forEach(b => b.disabled = false);
+        $('btn-factory-reset').disabled = false;
+        progressArea.classList.add('hidden');
+      });
+
+      xhr.addEventListener('abort', () => {
+        resultDiv.textContent = '✗ Upload aborted';
+        resultDiv.className = 'form-message error';
+        resultDiv.classList.remove('hidden');
+        form.querySelectorAll('button').forEach(b => b.disabled = false);
+        confirmRow.querySelectorAll('button').forEach(b => b.disabled = false);
+        $('btn-factory-reset').disabled = false;
+        progressArea.classList.add('hidden');
+      });
+
+      xhr.open('POST', '/api/ota/upload', true);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.send(otaSelectedFile);
+    } catch (e) {
+      resultDiv.textContent = '✗ ' + e.message;
+      resultDiv.className = 'form-message error';
+      resultDiv.classList.remove('hidden');
+      form.querySelectorAll('button').forEach(b => b.disabled = false);
+      confirmRow.querySelectorAll('button').forEach(b => b.disabled = false);
+      $('btn-factory-reset').disabled = false;
+      progressArea.classList.add('hidden');
+    }
+  });
+
+  // OTA status polling
+  async function updateOtaStatus() {
+    try {
+      const status = await api('GET', '/ota/status');
+      $('ota-current-version').textContent = status.current_version || '-';
+      $('ota-running-partition').textContent = status.running_partition || '-';
+
+      if (status.uploaded_version) {
+        $('ota-new-info').classList.remove('hidden');
+        $('ota-new-version').textContent = status.uploaded_version;
+        $('ota-target-partition').textContent = status.target_partition || '-';
+      }
+
+      if (status.rollback_pending) {
+        $('ota-result').textContent = '⚠ App pending verification \u2014 rollback possible';
+        $('ota-result').className = 'form-message warning';
+        $('ota-result').classList.remove('hidden');
+      }
+    } catch (_) {
+      // Ignore
+    }
+  }
 
   // --- Factory Reset ---
   $('btn-factory-reset').addEventListener('click', async () => {
@@ -948,8 +1106,10 @@
     await updateStatus();
     await loadWifiConfig();
     await updateDspState();
+    await updateOtaStatus();
     setInterval(updateStatus, 5000);
     setInterval(updateDspState, 15000);
+    setInterval(updateOtaStatus, 30000);
   }
 
   document.addEventListener('DOMContentLoaded', init);
