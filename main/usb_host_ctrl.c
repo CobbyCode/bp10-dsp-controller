@@ -6,11 +6,15 @@
 // Implementiert die USB-Host-Initialisierung, Device-Enumeration
 // und HID Control Transfers (SET_REPORT / GET_REPORT) für den ESP32-S3.
 //
+// Unterstützt zwei Transportprofile:
+//   A800X:         0x8888:0x171E, Interface 0, 256 Byte
+//   Generic Classic: 0x8888:0x1719, Interface 4, 256 Byte
+//
 // Framing:
 //   A5 5A <effect-id> <length/command> ... 16
-//   HID SET_REPORT via Control Transfer, 256 Bytes
-//   bmRequestType: 0x21, bRequest: 0x09, wValue: 0x0200, wIndex: 0x0000
-//   GET_REPORT:    0xA1, bRequest: 0x01, wValue: 0x0100, wIndex: 0x0000
+//   HID SET_REPORT via Control Transfer, report_size Bytes
+//   bmRequestType: 0x21, bRequest: 0x09, wValue: 0x0200, wIndex: interface_number
+//   GET_REPORT:    0xA1, bRequest: 0x01, wValue: 0x0100, wIndex: interface_number
 //
 
 #include "usb_host_ctrl.h"
@@ -36,8 +40,18 @@ static const char *TAG = "bp10_usb_host";
 // ---------------------------------------------------------------------------
 static bool s_initialized = false;
 static bool s_device_connected = false;
+static bool s_interface_claimed = false;
 static usb_device_handle_t s_device_handle = NULL;
 static usb_host_client_handle_t s_client_handle = NULL;
+
+// Aktives Transportprofil (wird nach VID/PID-Erkennung gesetzt)
+static mvs_usb_transport_t s_transport = {
+    .kind = MVS_USB_PROFILE_NONE,
+    .vid = 0,
+    .pid = 0,
+    .interface_number = 0,
+    .report_size = 256,
+};
 
 // Event-Group für Device-Connect/Disconnect-Sync
 static EventGroupHandle_t s_events = NULL;
@@ -48,6 +62,34 @@ static EventGroupHandle_t s_events = NULL;
 static SemaphoreHandle_t s_xfer_sem = NULL;
 static esp_err_t s_xfer_result = ESP_OK;
 static int s_xfer_actual = 0;
+
+// ---------------------------------------------------------------------------
+// Transportprofil-Auswahl anhand VID/PID
+// ---------------------------------------------------------------------------
+
+static mvs_usb_transport_t select_transport_profile(uint16_t vid, uint16_t pid)
+{
+    mvs_usb_transport_t transport;
+    if (usb_host_ctrl_select_transport(vid, pid, &transport)) return transport;
+    return transport;
+}
+
+// ---------------------------------------------------------------------------
+// Hilfsfunktion: Interface freigeben
+// ---------------------------------------------------------------------------
+
+static void release_claimed_interface(void)
+{
+    if (s_device_handle && s_interface_claimed) {
+        esp_err_t err = usb_host_interface_release(
+            s_client_handle, s_device_handle, s_transport.interface_number);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "interface_release(%d) fehlgeschlagen: %s",
+                     s_transport.interface_number, esp_err_to_name(err));
+        }
+        s_interface_claimed = false;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Transfer-Callback (wird aus usb_host_client_handle_events() aufgerufen)
@@ -73,7 +115,8 @@ static void transfer_callback(usb_transfer_t *xfer)
             ESP_LOGW(TAG, "Transfer NO_DEVICE – Gerät während Transfers entfernt");
             s_xfer_result = ESP_ERR_INVALID_STATE;
             s_device_connected = false;
-            s_device_handle = NULL;
+            // DEV_GONE owns interface release and handle close. Keep the exact
+            // claimed interface state intact until that callback runs.
             break;
         default:
             ESP_LOGW(TAG, "Transfer status %d", xfer->status);
@@ -105,38 +148,21 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
                 break;
             }
 
-            // Interface 0 claimen (HID-Control)
-            err = usb_host_interface_claim(s_client_handle, s_device_handle, 0, 0);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Interface claim fehlgeschlagen: %s", esp_err_to_name(err));
+            // Device-Descriptor lesen (VID/PID)
+            const usb_device_desc_t *dev_desc = NULL;
+            err = usb_host_get_device_descriptor(s_device_handle, &dev_desc);
+            if (err != ESP_OK || !dev_desc) {
+                ESP_LOGW(TAG, "Device-Descriptor nicht lesbar: %s", esp_err_to_name(err));
                 usb_host_device_close(s_client_handle, s_device_handle);
                 s_device_handle = NULL;
                 break;
             }
 
-            // Device-Descriptor lesen (VID/PID)
-            const usb_device_desc_t *dev_desc = NULL;
-            err = usb_host_get_device_descriptor(s_device_handle, &dev_desc);
-            if (err == ESP_OK && dev_desc) {
-                ESP_LOGI(TAG, "USB-EVENT: NEUES DEVICE an Adresse %d",
-                         event_msg->new_dev.address);
-                ESP_LOGI(TAG, "  VID:0x%04X  PID:0x%04X  bcdUSB:0x%04X  Klasse:%d",
-                         dev_desc->idVendor, dev_desc->idProduct,
-                         dev_desc->bcdUSB, dev_desc->bDeviceClass);
-
-                if (dev_desc->idVendor == BP10_USB_VID &&
-                    dev_desc->idProduct == BP10_USB_PID) {
-                    ESP_LOGI(TAG, "✅ BP10 DSP ERKANNT (VID:0x%04X PID:0x%04X)",
-                             BP10_USB_VID, BP10_USB_PID);
-                } else {
-                    ESP_LOGW(TAG, "⚠️ Fremdgerät: VID:0x%04X PID:0x%04X (warte auf BP10 0x%04X:0x%04X)",
-                             dev_desc->idVendor, dev_desc->idProduct,
-                             BP10_USB_VID, BP10_USB_PID);
-                }
-            } else {
-                ESP_LOGW(TAG, "USB-EVENT: Device an Adresse %d – Descriptor nicht lesbar",
-                         event_msg->new_dev.address);
-            }
+            ESP_LOGI(TAG, "USB-EVENT: NEUES DEVICE an Adresse %d",
+                     event_msg->new_dev.address);
+            ESP_LOGI(TAG, "  VID:0x%04X  PID:0x%04X  bcdUSB:0x%04X  Klasse:%d",
+                     dev_desc->idVendor, dev_desc->idProduct,
+                     dev_desc->bcdUSB, dev_desc->bDeviceClass);
 
             // Geräte-Info (Speed, MaxPacket)
             usb_device_info_t dev_info;
@@ -149,7 +175,48 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
                          dev_info.bMaxPacketSize0, dev_info.bConfigurationValue);
             }
 
-            // Config-Descriptor dump (HID-Report-Deskriptor)
+            // Transportprofil anhand VID/PID auswählen
+            s_transport = select_transport_profile(dev_desc->idVendor,
+                                                    dev_desc->idProduct);
+
+            if (s_transport.kind == MVS_USB_PROFILE_NONE) {
+                ESP_LOGW(TAG, "⚠️ Fremdgerät: VID:0x%04X PID:0x%04X – kein Interface claimen",
+                         dev_desc->idVendor, dev_desc->idProduct);
+                // Config-Descriptor dump (für Debug)
+                const usb_config_desc_t *config_desc = NULL;
+                err = usb_host_get_active_config_descriptor(s_device_handle, &config_desc);
+                if (err == ESP_OK && config_desc) {
+                    ESP_LOGI(TAG, "  Config: %u Interface(s), wTotalLength=%u Bytes",
+                             config_desc->bNumInterfaces, config_desc->wTotalLength);
+                    uint16_t dump_len = config_desc->wTotalLength < 128 ? config_desc->wTotalLength : 128;
+                    ESP_LOGI(TAG, "  ConfigDesc (%d bytes):", dump_len);
+                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, config_desc, dump_len, ESP_LOG_INFO);
+                }
+                // Unbekanntes Gerät: nicht claimen, nicht als verbunden melden
+                usb_host_device_close(s_client_handle, s_device_handle);
+                s_device_handle = NULL;
+                break;
+            }
+
+            // Passendes Interface claimen
+            err = usb_host_interface_claim(s_client_handle, s_device_handle,
+                                           s_transport.interface_number, 0);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Interface claim (%d) fehlgeschlagen: %s",
+                         s_transport.interface_number, esp_err_to_name(err));
+                usb_host_device_close(s_client_handle, s_device_handle);
+                s_device_handle = NULL;
+                break;
+            }
+            s_interface_claimed = true;
+
+            ESP_LOGI(TAG, "✅ %s ERKANNT (VID:0x%04X PID:0x%04X, Interface %d, Report %d B)",
+                     s_transport.kind == MVS_USB_PROFILE_A800X ? "A800X" :
+                     s_transport.kind == MVS_USB_PROFILE_GENERIC_CLASSIC ? "Generic Classic" : "Unknown",
+                     s_transport.vid, s_transport.pid,
+                     s_transport.interface_number, s_transport.report_size);
+
+            // Config-Descriptor dump
             const usb_config_desc_t *config_desc = NULL;
             err = usb_host_get_active_config_descriptor(s_device_handle, &config_desc);
             if (err == ESP_OK && config_desc) {
@@ -158,12 +225,11 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
                 uint16_t dump_len = config_desc->wTotalLength < 128 ? config_desc->wTotalLength : 128;
                 ESP_LOGI(TAG, "  ConfigDesc (%d bytes):", dump_len);
                 ESP_LOG_BUFFER_HEX_LEVEL(TAG, config_desc, dump_len, ESP_LOG_INFO);
-            } else {
-                ESP_LOGW(TAG, "  Config-Descriptor nicht lesbar: %s", esp_err_to_name(err));
             }
 
             s_device_connected = true;
-            ESP_LOGI(TAG, "USB-Gerät sauber enumeriert");
+            ESP_LOGI(TAG, "USB-Gerät sauber enumeriert (Transportprofil: %d)",
+                     s_transport.kind);
             if (s_events) {
                 xEventGroupSetBits(s_events, EVENT_DEVICE_CONNECTED);
             }
@@ -173,16 +239,21 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
         case USB_HOST_CLIENT_EVENT_DEV_GONE: {
             ESP_LOGW(TAG, "BP10 getrennt – USB-Device-Handle wird freigegeben");
 
-            usb_device_handle_t old_handle = s_device_handle;
+            mvs_usb_profile_kind_t old_kind = s_transport.kind;
+            uint8_t claimed_interface = s_transport.interface_number;
+            bool was_claimed = s_interface_claimed;
 
-            // Handle sauber freigeben, sonst blockiert der alte Handle
-            // die Enumeration eines neuen Geräts.
+            // Handle sauber freigeben
             if (s_device_handle) {
-                esp_err_t release_err = usb_host_interface_release(
-                    s_client_handle, s_device_handle, 0);
-                if (release_err != ESP_OK) {
-                    ESP_LOGE(TAG, "interface_release fehlgeschlagen: %s",
-                             esp_err_to_name(release_err));
+                // Interface mit dem ursprünglichen Interface-Nummer freigeben
+                // (nicht hardcoded 0)
+                if (was_claimed) {
+                    esp_err_t release_err = usb_host_interface_release(
+                        s_client_handle, s_device_handle, claimed_interface);
+                    if (release_err != ESP_OK) {
+                        ESP_LOGE(TAG, "interface_release(%d) fehlgeschlagen: %s",
+                                 claimed_interface, esp_err_to_name(release_err));
+                    }
                 }
 
                 esp_err_t close_err = usb_host_device_close(
@@ -192,13 +263,16 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
                              esp_err_to_name(close_err));
                 }
 
-                ESP_LOGD(TAG, "Handle %p freigegeben", (void *)old_handle);
+                ESP_LOGD(TAG, "Handle %p freigegeben (Profil: %d)",
+                         (void *)s_device_handle, old_kind);
             } else {
                 ESP_LOGD(TAG, "DEV_GONE: Handle bereits NULL (Double-Event)");
             }
 
             s_device_handle = NULL;
             s_device_connected = false;
+            s_interface_claimed = false;
+            memset(&s_transport, 0, sizeof(s_transport));
 
             if (s_events) {
                 xEventGroupSetBits(s_events, EVENT_DEVICE_DISCONNECTED);
@@ -276,7 +350,38 @@ static void usb_host_lib_task(void *arg)
 }
 
 // ---------------------------------------------------------------------------
-// Öffentliche API
+// Öffentliche API — Transportprofil
+// ---------------------------------------------------------------------------
+
+mvs_usb_profile_kind_t usb_host_ctrl_get_profile(void)
+{
+    return s_transport.kind;
+}
+
+uint16_t usb_host_ctrl_get_vid(void)
+{
+    return s_transport.vid;
+}
+
+uint16_t usb_host_ctrl_get_pid(void)
+{
+    return s_transport.pid;
+}
+
+esp_err_t usb_host_ctrl_get_transport(mvs_usb_transport_t *transport)
+{
+    if (!transport) return ESP_ERR_INVALID_ARG;
+    if (!s_device_connected || !s_interface_claimed ||
+        s_transport.kind == MVS_USB_PROFILE_NONE) {
+        memset(transport, 0, sizeof(*transport));
+        return ESP_ERR_INVALID_STATE;
+    }
+    *transport = s_transport;
+    return ESP_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Öffentliche API — Lebenszyklus
 // ---------------------------------------------------------------------------
 
 esp_err_t usb_host_ctrl_init(void)
@@ -380,8 +485,9 @@ esp_err_t usb_host_ctrl_wait_for_device(uint16_t vid, uint16_t pid,
         return ESP_ERR_TIMEOUT;
     }
 
-    if (s_device_handle) {
-        ESP_LOGI(TAG, "Device verbunden und konfiguriert");
+    if (s_device_handle && s_transport.kind != MVS_USB_PROFILE_NONE) {
+        ESP_LOGI(TAG, "Device verbunden und konfiguriert (Profil: %d)",
+                 s_transport.kind);
         return ESP_OK;
     }
 
@@ -406,6 +512,11 @@ static esp_err_t submit_control_transfer(
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_transport.kind == MVS_USB_PROFILE_NONE) {
+        ESP_LOGD(TAG, "Control-Transfer abgelehnt: kein Profil aktiv");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     // Transfer allozieren: 8 Byte Setup + 256 Byte Daten
     usb_transfer_t *xfer;
     esp_err_t err = usb_host_transfer_alloc(264, 0, &xfer);
@@ -424,14 +535,14 @@ static esp_err_t submit_control_transfer(
 
     // Daten nach dem Setup-Packet
     if (out_data && out_len > 0) {
-        uint16_t copy_len = (out_len < 256) ? out_len : 256;
-        memset(xfer->data_buffer + 8, 0, 256);
+        uint16_t copy_len = (out_len < s_transport.report_size) ? out_len : s_transport.report_size;
+        memset(xfer->data_buffer + 8, 0, s_transport.report_size);
         memcpy(xfer->data_buffer + 8, out_data, copy_len);
         ESP_LOGD(TAG, "TX Hex: %02x %02x %02x %02x %02x %02x %02x %02x...",
                  out_data[0], out_data[1], out_data[2], out_data[3],
                  out_data[4], out_data[5], out_data[6], out_data[7]);
     } else {
-        memset(xfer->data_buffer + 8, 0, 256);
+        memset(xfer->data_buffer + 8, 0, s_transport.report_size);
     }
 
     xfer->num_bytes       = 8 + wLength;
@@ -487,15 +598,15 @@ esp_err_t usb_host_ctrl_send_report(const uint8_t *data, uint16_t length)
 {
     // HID SET_REPORT: Host-to-Device, Class, Interface
     // Output Report (0x0200), Report ID 0.
+    // wIndex aus Transportprofil
 
-    ESP_LOGD(TAG, "HID SET_REPORT Output Report (%d Bytes Nutzdaten)", length);
+    ESP_LOGD(TAG, "HID SET_REPORT Output Report (%d Bytes Nutzdaten, Interface %d)",
+             length, s_transport.interface_number);
 
+    mvs_usb_control_setup_t setup;
+    mvs_usb_make_set_report_setup(&s_transport, &setup);
     return submit_control_transfer(
-        0x21,       // bmRequestType: Host-to-Device, Class, Interface
-        0x09,       // bRequest: SET_REPORT
-        0x0200,     // wValue: Report Type Output, Report ID 0
-        0x0000,     // wIndex: Interface 0
-        256,        // wLength
+        setup.request_type, setup.request, setup.value, setup.index, setup.length,
         data,       // out_data
         length,     // out_len
         NULL,       // in_buffer
@@ -510,17 +621,16 @@ esp_err_t usb_host_ctrl_get_report(uint8_t *buffer, uint16_t *out_length)
     // bmRequestType: 0xA1
     // bRequest: 0x01 (GET_REPORT)
     // wValue: 0x0100 (Report Type = Input, Report ID = 0)
-    // wIndex: 0x0000 (Interface 0)
+    // wIndex: dynamisch aus Transportprofil
     // wLength: 256
 
-    ESP_LOGD(TAG, "HID GET_REPORT");
+    ESP_LOGD(TAG, "HID GET_REPORT (Interface %d)",
+             s_transport.interface_number);
 
+    mvs_usb_control_setup_t setup;
+    mvs_usb_make_get_report_setup(&s_transport, &setup);
     return submit_control_transfer(
-        0xA1,       // bmRequestType: Device-to-Host, Class, Interface
-        0x01,       // bRequest: GET_REPORT
-        0x0100,     // wValue: Report Type Input, Report ID 0
-        0x0000,     // wIndex: Interface 0
-        256,        // wLength
+        setup.request_type, setup.request, setup.value, setup.index, setup.length,
         NULL,       // out_data
         0,          // out_len
         buffer,     // in_buffer
@@ -531,7 +641,9 @@ esp_err_t usb_host_ctrl_get_report(uint8_t *buffer, uint16_t *out_length)
 
 bool usb_host_ctrl_is_device_connected(void)
 {
-    return s_device_connected;
+    // Erst verbunden, wenn Transportprofil gesetzt UND Device-Handle gültig
+    return s_device_connected && s_device_handle &&
+           s_transport.kind != MVS_USB_PROFILE_NONE;
 }
 
 void usb_host_ctrl_deinit(void)
@@ -541,12 +653,14 @@ void usb_host_ctrl_deinit(void)
     ESP_LOGI(TAG, "USB-Host deinitialisieren...");
 
     if (s_device_handle) {
-        usb_host_interface_release(s_client_handle, s_device_handle, 0);
+        release_claimed_interface();
         usb_host_device_close(s_client_handle, s_device_handle);
         s_device_handle = NULL;
     }
 
     s_device_connected = false;
+    s_interface_claimed = false;
+    s_transport.kind = MVS_USB_PROFILE_NONE;
 
     if (s_xfer_sem) {
         vSemaphoreDelete(s_xfer_sem);

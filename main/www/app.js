@@ -36,6 +36,13 @@
   const drcMessage = $('drc-message');
   const drcEditor = $('drc-module').querySelector('.module-editor');
   let preeqBaseline = null;
+  let activeCapabilities = {};
+  let activePreeqSchema = 'none';
+
+  function toggleModule(id, available) {
+    const module = $(id);
+    if (module) module.classList.toggle('hidden', available !== true);
+  }
   const factoryPreeqFilters = [
     null, // F0 gehört zum rückseitigen Crossover und wird immer erhalten.
     { enabled:true,  type:3, frequency_hz:500,   q:0.707, gain_db:0 },
@@ -106,6 +113,17 @@
         dspStatus.className = 'status-dot dot-on';
         // Controls remain hidden until /dsp has returned confirmed hardware
         // values. Showing unchecked HTML defaults here causes OFF -> ON jumps.
+        activeCapabilities = data.capabilities || {};
+        activePreeqSchema = activeCapabilities.preeq_schema || 'none';
+        toggleModule('noise-module', activeCapabilities.noise_suppressor);
+        toggleModule('bass-module', activeCapabilities.virtual_bass);
+        toggleModule('silence-module', activeCapabilities.silence_detector);
+        toggleModule('preeq-module', activeCapabilities.preeq);
+        toggleModule('drc-module', activeCapabilities.drc);
+        $('drc-ratio').step = String(activeCapabilities.drc_ratio_step || 0.01);
+        const normalizedPersistence = data.device && data.device.profile === 'a800x_fixed';
+        $('btn-dsp-export').disabled = !normalizedPersistence;
+        $('btn-dsp-import').disabled = !normalizedPersistence;
       } else {
         dspStatus.textContent = 'DSP ✗';
         dspStatus.className = 'status-dot dot-off';
@@ -114,6 +132,10 @@
         resetSilenceUnread();
         resetPreeqUnread();
         resetDrcUnread();
+        ['noise-module','bass-module','silence-module','preeq-module','drc-module']
+          .forEach(id => toggleModule(id, false));
+        $('btn-dsp-export').disabled = true;
+        $('btn-dsp-import').disabled = true;
       }
 
       // WiFi-Status: AP + STA getrennt
@@ -411,11 +433,12 @@
   }
 
   function setDrcForm(data) {
-    const fullBandSupported = Number(data.mode) === 0;
+    const fullBandSupported = data.full_band_supported === true;
     $('drc-enable').checked = data.enabled === true;
     $('drc-pregain').value = Number(data.pregain_db).toFixed(2);
     $('drc-threshold').value = Number(data.threshold_db).toFixed(2);
-    $('drc-ratio').value = Number(data.ratio).toFixed(2);
+    $('drc-ratio').value = Number(data.ratio).toFixed(
+      Number(activeCapabilities.drc_ratio_step) === 1 ? 0 : 2);
     $('drc-attack').value = data.attack_ms;
     $('drc-release').value = data.release_ms;
     ['drc-enable','drc-pregain','drc-threshold','drc-ratio','drc-attack','drc-release']
@@ -424,7 +447,7 @@
     $('btn-drc-apply').disabled = !fullBandSupported;
     drcState.textContent = fullBandSupported
       ? (data.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED')
-      : `MODE ${data.mode} · READ ONLY`;
+      : 'UNSUPPORTED MODE · READ ONLY';
     drcState.className = 'module-state ' + (fullBandSupported && data.enabled ? 'is-on' : '');
     drcMessage.textContent = fullBandSupported
       ? ''
@@ -547,7 +570,8 @@
     }
   });
 
-  const filterTypes = ['PK','LS','HS','LP','HP','BP','NH','LO','HO'];
+  const a800xFilterTypes = ['PK','LS','HS','LP','HP','BP','NH','LO','HO'];
+  const classicFilterTypes = ['PK','LS','HS','LP','HP','BP','NH'];
 
   function clonePreeq(data) {
     return {
@@ -563,6 +587,8 @@
   function setPreeqForm(data) {
     if (!Array.isArray(data.preeq_filters) || data.preeq_filters.length !== 10) return;
     preeqBaseline = clonePreeq(data);
+    const filterTypes = activePreeqSchema === 'classic_10band'
+      ? classicFilterTypes : a800xFilterTypes;
     $('preeq-enable').checked = preeqBaseline.enabled;
     $('preeq-enable').disabled = false;
     $('preeq-pregain').value = preeqBaseline.pregain_db.toFixed(2);

@@ -43,6 +43,12 @@
 
 static const char *TAG = "bp10_api";
 
+static bool profile_uses_a800x_persistence(void)
+{
+    const mvs_device_profile_t *profile = dsp_model_get_device_profile();
+    return profile->valid && profile->kind == MVS_DEVICE_A800X_FIXED;
+}
+
 // ---------------------------------------------------------------------------
 // Hilfsfunktionen
 // ---------------------------------------------------------------------------
@@ -54,6 +60,8 @@ static esp_err_t send_json_response(httpd_req_t *req, int status,
     httpd_resp_set_status(req, status == 200 ? "200 OK"
                          : status == 400 ? "400 Bad Request"
                          : status == 404 ? "404 Not Found"
+                         : status == 409 ? "409 Conflict"
+                         : status == 503 ? "503 Service Unavailable"
                          : "500 Internal Server Error");
     return httpd_resp_sendstr(req, json);
 }
@@ -93,7 +101,9 @@ static esp_err_t send_ok(httpd_req_t *req, cJSON *extra)
  */
 static void auto_save_dsp_config(void)
 {
-    if (!usb_host_ctrl_is_device_connected()) return;
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (!g_dsp_connected || !device->valid ||
+        device->kind != MVS_DEVICE_A800X_FIXED) return;
 
     dsp_profile_t config;
     esp_err_t err = dsp_model_readback(&config);
@@ -118,10 +128,43 @@ static esp_err_t handler_status_get(httpd_req_t *req)
     cJSON_AddStringToObject(root, "version", APP_VERSION);
 
     // DSP
-    bool dsp_ok = usb_host_ctrl_is_device_connected();
+    bool dsp_ok = g_dsp_connected;
     cJSON_AddBoolToObject(root, "dsp_connected", dsp_ok);
     cJSON_AddBoolToObject(root, "dsp_noise_suppressor", dsp_ok ? g_dsp_ns_state : false);
-    cJSON_AddBoolToObject(root, "dsp_config_saved", nvs_settings_has_dsp_config());
+    const mvs_device_profile_t *device_profile = dsp_model_get_device_profile();
+    bool a800x = dsp_ok && device_profile->kind == MVS_DEVICE_A800X_FIXED;
+    cJSON_AddBoolToObject(root, "dsp_config_saved",
+                          a800x && nvs_settings_has_dsp_config());
+
+    cJSON *device = cJSON_AddObjectToObject(root, "device");
+    cJSON_AddStringToObject(device, "profile",
+        !dsp_ok ? "none" : a800x ? "a800x_fixed" : "generic_acp_classic");
+    cJSON_AddNumberToObject(device, "vid", device_profile->vid);
+    cJSON_AddNumberToObject(device, "pid", device_profile->pid);
+    cJSON_AddNumberToObject(device, "usb_interface", device_profile->usb_interface);
+    cJSON_AddBoolToObject(device, "catalog_discovered",
+                          device_profile->catalog_discovered);
+    cJSON_AddNumberToObject(device, "effect_count", device_profile->catalog_count);
+
+    cJSON *caps = cJSON_AddObjectToObject(root, "capabilities");
+    cJSON_AddBoolToObject(caps, "noise_suppressor",
+                          dsp_ok && device_profile->noise_suppressor.available);
+    cJSON_AddBoolToObject(caps, "virtual_bass",
+                          dsp_ok && device_profile->virtual_bass.available);
+    cJSON_AddBoolToObject(caps, "silence_detector",
+                          dsp_ok && device_profile->silence_detector.available);
+    cJSON_AddBoolToObject(caps, "preeq", dsp_ok && device_profile->preeq.available);
+    cJSON_AddBoolToObject(caps, "drc", dsp_ok && device_profile->drc.available);
+    cJSON_AddStringToObject(caps, "preeq_schema",
+        device_profile->preeq_schema == MVS_PEQ_SCHEMA_A800X ? "a800x" :
+        device_profile->preeq_schema == MVS_PEQ_SCHEMA_CLASSIC_10BAND ?
+        "classic_10band" : "none");
+    cJSON_AddStringToObject(caps, "drc_schema",
+        device_profile->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH ? "a800x_4path" :
+        device_profile->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ?
+        "classic_3band" : "none");
+    cJSON_AddNumberToObject(caps, "drc_ratio_step",
+        device_profile->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ? 1.0 : 0.01);
 
     // MAC
     char mac[18];
@@ -174,7 +217,7 @@ static esp_err_t handler_status_get(httpd_req_t *req)
 
 static esp_err_t handler_dsp_get(httpd_req_t *req)
 {
-    if (!usb_host_ctrl_is_device_connected()) {
+    if (!g_dsp_connected) {
         cJSON *root = cJSON_CreateObject();
         cJSON_AddStringToObject(root, "dsp", "unavailable");
         cJSON_AddStringToObject(root, "error", "Kein DSP angeschlossen");
@@ -247,29 +290,26 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
             cJSON_AddItemToArray(legacy_filters, item);
         }
     }
-    mvs_drc_packed_state_t drc_state;
-    esp_err_t drc_err = dsp_model_read_drc(&drc_state);
+    dsp_drc_view_t drc_view;
+    esp_err_t drc_err = dsp_model_read_drc_view(&drc_view);
     cJSON *drc = cJSON_AddObjectToObject(root, "drc");
     cJSON_AddBoolToObject(drc, "valid", drc_err == ESP_OK);
     cJSON_AddBoolToObject(drc, "read_success", drc_err == ESP_OK);
     cJSON_AddNumberToObject(drc, "readback_ms", (double)readback_ms);
     if (drc_err == ESP_OK) {
-        const int full_band = 3;
-        double coefficient = drc_state.pregains[full_band] / 4096.0;
-        cJSON_AddBoolToObject(drc, "enabled", drc_state.enabled != 0);
-        cJSON_AddNumberToObject(drc, "mode", drc_state.mode);
-        cJSON_AddNumberToObject(drc, "pregain_db",
-                                coefficient > 0.0 ? 20.0 * log10(coefficient) : -72.0);
-        cJSON_AddNumberToObject(drc, "threshold_db",
-                                drc_state.thresholds[full_band] / 100.0);
-        cJSON_AddNumberToObject(drc, "ratio",
-                                drc_state.ratios[full_band] / 100.0);
-        cJSON_AddNumberToObject(drc, "attack_ms", drc_state.attacks[full_band]);
-        cJSON_AddNumberToObject(drc, "release_ms", drc_state.releases[full_band]);
-        cJSON_AddBoolToObject(root, "drc_enabled", drc_state.enabled != 0);
+        cJSON_AddBoolToObject(drc, "enabled", drc_view.enabled);
+        cJSON_AddBoolToObject(drc, "full_band_supported", drc_view.full_band_supported);
+        cJSON_AddNumberToObject(drc, "pregain_db", drc_view.pregain_db);
+        cJSON_AddNumberToObject(drc, "threshold_db", drc_view.threshold_db);
+        cJSON_AddNumberToObject(drc, "ratio", drc_view.ratio);
+        cJSON_AddNumberToObject(drc, "attack_ms", drc_view.attack_ms);
+        cJSON_AddNumberToObject(drc, "release_ms", drc_view.release_ms);
+        cJSON_AddBoolToObject(root, "drc_enabled", drc_view.enabled);
     }
 
-    cJSON_AddBoolToObject(root, "dsp_config_saved", nvs_settings_has_dsp_config());
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    cJSON_AddBoolToObject(root, "dsp_config_saved",
+        device->kind == MVS_DEVICE_A800X_FIXED && nvs_settings_has_dsp_config());
 
     char *json = cJSON_PrintUnformatted(root);
     ESP_LOGI(TAG, "DSP JSON: %s", json);
@@ -285,7 +325,7 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
 
 static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
 {
-    if (!usb_host_ctrl_is_device_connected()) {
+    if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
 
@@ -368,7 +408,7 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "attack_ms", readback.noise_suppressor_attack_ms);
     cJSON_AddNumberToObject(result, "release_ms", readback.noise_suppressor_release_ms);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", true);
+    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
     return send_ok(req, result);
 }
 
@@ -378,7 +418,7 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
 
 static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
 {
-    if (!usb_host_ctrl_is_device_connected()) {
+    if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
 
@@ -448,7 +488,7 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "intensity_pct", readback.virtual_bass_intensity_pct);
     cJSON_AddBoolToObject(result, "bass_enhanced", readback.virtual_bass_enhanced);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", true);
+    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
     return send_ok(req, result);
 }
 
@@ -463,7 +503,7 @@ static esp_err_t handler_dsp_toggle_confirmed(httpd_req_t *req,
                                                uint8_t effect_id,
                                                const char *name)
 {
-    if (!usb_host_ctrl_is_device_connected()) {
+    if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
 
@@ -496,14 +536,14 @@ static esp_err_t handler_dsp_toggle_confirmed(httpd_req_t *req,
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", true);
+    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
     return send_ok(req, result);
 }
 
 static esp_err_t handler_dsp_silence_post(httpd_req_t *req)
 {
     return handler_dsp_toggle_confirmed(req, dsp_model_set_silence_detector,
-                                        MVS_EFFECT_SILENCE_DETECTOR,
+                                        dsp_model_get_effect_id_sd(),
                                         "Failed to set Silence Detector");
 }
 
@@ -513,7 +553,7 @@ static esp_err_t handler_dsp_silence_post(httpd_req_t *req)
 
 static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
 {
-    if (!usb_host_ctrl_is_device_connected()) {
+    if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
     if (req->content_len <= 0 || req->content_len > 4096) {
@@ -549,6 +589,9 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     requested.block_enabled = cJSON_IsTrue(enable) ? 1 : 0;
     double pregain_scaled = pregain->valuedouble * 256.0;
     requested.pre_gain_raw = (int16_t)(pregain_scaled + (pregain_scaled >= 0 ? 0.5 : -0.5));
+    const mvs_device_profile_t *device_profile = dsp_model_get_device_profile();
+    int max_filter_type = device_profile->preeq_schema ==
+        MVS_PEQ_SCHEMA_CLASSIC_10BAND ? MVS_FILTER_NH : MVS_FILTER_HO;
 
     cJSON *change;
     cJSON_ArrayForEach(change, changes) {
@@ -561,7 +604,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
         value = cJSON_GetObjectItem(change, "enabled");
         if (value) { if (!cJSON_IsBool(value)) { cJSON_Delete(json); return send_error(req, 400, "Invalid filter enabled value"); } filter->enabled = cJSON_IsTrue(value) ? 1 : 0; }
         value = cJSON_GetObjectItem(change, "type");
-        if (value) { if (!cJSON_IsNumber(value) || value->valueint < 0 || value->valueint > 8) { cJSON_Delete(json); return send_error(req, 400, "Invalid filter type"); } filter->type = value->valueint; }
+        if (value) { if (!cJSON_IsNumber(value) || value->valueint < 0 || value->valueint > max_filter_type) { cJSON_Delete(json); return send_error(req, 400, "Invalid filter type for this device profile"); } filter->type = value->valueint; }
         value = cJSON_GetObjectItem(change, "frequency_hz");
         if (value) { if (!cJSON_IsNumber(value) || value->valuedouble < 1 || value->valuedouble > UINT16_MAX) { cJSON_Delete(json); return send_error(req, 400, "Invalid filter frequency"); } filter->frequency_hz = (uint16_t)value->valuedouble; }
         value = cJSON_GetObjectItem(change, "q");
@@ -586,6 +629,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
             f->gain_raw = 0;
         }
     }
+    mvs_prepare_preeq_for_schema(device_profile->preeq_schema, &requested);
 
     dsp_profile_t readback;
     err = dsp_model_readback(&readback);
@@ -599,7 +643,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     cJSON_AddBoolToObject(result, "enabled", readback.preeq.block_enabled != 0);
     cJSON_AddNumberToObject(result, "pregain_db", readback.preeq.pre_gain_raw / 256.0);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", true);
+    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
     return send_ok(req, result);
 }
 
@@ -609,7 +653,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
 
 static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
 {
-    if (!usb_host_ctrl_is_device_connected()) {
+    if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
     char buf[256];
@@ -637,47 +681,43 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
         return send_error(req, 400, "Invalid Full-Band DRC values");
     }
 
-    mvs_drc_packed_state_t requested;
-    esp_err_t err = dsp_model_read_drc(&requested);
-    if (err != ESP_OK) {
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (device->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
+        fabs(ratio->valuedouble - round(ratio->valuedouble)) > 0.000001) {
         cJSON_Delete(json);
-        return send_error(req, 500, "Complete DRC readback failed");
+        return send_error(req, 400, "Classic DRC ratio must be an integer");
     }
-    if (requested.mode != 0) {
-        cJSON_Delete(json);
-        return send_error(req, 409,
-                          "DRC is not in supported Full-Band mode; no values were changed");
-    }
-    const int full_band = 3;
-    requested.enabled = cJSON_IsTrue(enable) ? 1 : 0;
-    requested.pregains[full_band] = (uint16_t)lround(4096.0 * pow(10.0, pregain->valuedouble / 20.0));
-    requested.thresholds[full_band] = (int16_t)lround(threshold->valuedouble * 100.0);
-    requested.ratios[full_band] = (uint16_t)lround(ratio->valuedouble * 100.0);
-    requested.attacks[full_band] = (uint16_t)lround(attack->valuedouble);
-    requested.releases[full_band] = (uint16_t)lround(release->valuedouble);
+    dsp_drc_view_t requested = {
+        .valid = true,
+        .enabled = cJSON_IsTrue(enable),
+        .full_band_supported = true,
+        .pregain_db = pregain->valuedouble,
+        .threshold_db = threshold->valuedouble,
+        .ratio = ratio->valuedouble,
+        .attack_ms = (uint16_t)lround(attack->valuedouble),
+        .release_ms = (uint16_t)lround(release->valuedouble),
+    };
     cJSON_Delete(json);
 
-    err = dsp_model_update_drc(&requested);
-    if (err != ESP_OK) return send_error(req, 500, "Failed to write DRC");
-    mvs_drc_packed_state_t readback_state;
-    err = dsp_model_read_drc(&readback_state);
-    if (err != ESP_OK || memcmp(&requested, &readback_state, sizeof(requested)) != 0) {
-        return send_error(req, 500, "DRC readback mismatch");
-    }
+    dsp_drc_view_t confirmed;
+    esp_err_t err = dsp_model_update_drc_view(&requested, &confirmed);
+    if (err == ESP_ERR_INVALID_STATE)
+        return send_error(req, 409,
+                          "DRC is not in supported Full-Band mode; no values were changed");
+    if (err != ESP_OK) return send_error(req, 500, "DRC write/readback failed");
 
     auto_save_dsp_config();
 
-    double coefficient = readback_state.pregains[full_band] / 4096.0;
     cJSON *result = cJSON_CreateObject();
-    cJSON_AddBoolToObject(result, "enabled", readback_state.enabled != 0);
-    cJSON_AddNumberToObject(result, "mode", readback_state.mode);
-    cJSON_AddNumberToObject(result, "pregain_db", 20.0 * log10(coefficient));
-    cJSON_AddNumberToObject(result, "threshold_db", readback_state.thresholds[full_band] / 100.0);
-    cJSON_AddNumberToObject(result, "ratio", readback_state.ratios[full_band] / 100.0);
-    cJSON_AddNumberToObject(result, "attack_ms", readback_state.attacks[full_band]);
-    cJSON_AddNumberToObject(result, "release_ms", readback_state.releases[full_band]);
+    cJSON_AddBoolToObject(result, "enabled", confirmed.enabled);
+    cJSON_AddNumberToObject(result, "pregain_db", confirmed.pregain_db);
+    cJSON_AddNumberToObject(result, "threshold_db", confirmed.threshold_db);
+    cJSON_AddNumberToObject(result, "ratio", confirmed.ratio);
+    cJSON_AddNumberToObject(result, "attack_ms", confirmed.attack_ms);
+    cJSON_AddNumberToObject(result, "release_ms", confirmed.release_ms);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", true);
+    cJSON_AddBoolToObject(result, "saved",
+                          device->kind == MVS_DEVICE_A800X_FIXED);
     return send_ok(req, result);
 }
 
@@ -687,9 +727,11 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
 
 static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
 {
-    if (!usb_host_ctrl_is_device_connected()) {
+    if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
+    if (!profile_uses_a800x_persistence())
+        return send_error(req, 409, "Not supported for this device profile");
 
     char *buf = NULL;
     if (req->content_len > 0 && req->content_len <= 8192) {
@@ -757,6 +799,8 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
 
 static esp_err_t handler_config_export_post(httpd_req_t *req)
 {
+    if (!profile_uses_a800x_persistence())
+        return send_error(req, 409, "Not supported for this device profile");
     char *json = NULL;
     esp_err_t err = config_io_export(&json);
     if (err != ESP_OK || !json) {
@@ -775,6 +819,8 @@ static esp_err_t handler_config_export_post(httpd_req_t *req)
 
 static esp_err_t handler_config_import_post(httpd_req_t *req)
 {
+    if (!profile_uses_a800x_persistence())
+        return send_error(req, 409, "Not supported for this device profile");
     char *buf = NULL;
     if (req->content_len <= 0 || req->content_len > 32768) {
         return send_error(req, 400, "Invalid content length");

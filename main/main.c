@@ -30,6 +30,7 @@
 
 #include "usb_host_ctrl.h"
 #include "dsp_model.h"
+#include "mvs_device_runtime.h"
 #include "nvs_settings.h"
 #include "wifi_manager.h"
 #include "mdns_service.h"
@@ -62,6 +63,8 @@ void app_main(void)
 
     // 1. NVS initialisieren
     init_nvs();
+    ESP_ERROR_CHECK(dsp_model_init());
+    mvs_device_runtime_clear();
 
     // 2. OTA initialisieren (Partition-Check, Rollback-Status)
     ota_init();
@@ -77,31 +80,36 @@ void app_main(void)
     init_network();
     init_http_server();
 
-    // 6. Falls bereits verbunden: gespeicherte Konfiguration anwenden
-    //    oder nur lesen, falls keine gespeichert ist.
-    if (g_dsp_connected) {
-        dsp_boot_apply_task(NULL);
-    }
-
     ESP_LOGI(TAG, "Initialisierung abgeschlossen.");
     ESP_LOGI(TAG, "Web-UI: http://%s.local", CONFIG_BP10_MDNS_DEFAULT_HOSTNAME);
 
     // Normalbetrieb: Status-Loop
     while (1) {
-        // DSP-Connected-Status aktualisieren (für API)
         bool was_connected = g_dsp_connected;
-        g_dsp_connected = usb_host_ctrl_is_device_connected();
+        bool transport_connected = usb_host_ctrl_is_device_connected();
+
+        if (transport_connected && !mvs_device_runtime_is_ready()) {
+            esp_err_t identify_err = mvs_device_runtime_identify();
+            if (identify_err != ESP_OK) {
+                ESP_LOGW(TAG, "ACP device identification incomplete: %s",
+                         esp_err_to_name(identify_err));
+            }
+        } else if (!transport_connected && mvs_device_runtime_is_ready()) {
+            mvs_device_runtime_clear();
+        }
+        g_dsp_connected = transport_connected && mvs_device_runtime_is_ready();
 
         // Bei späterer Verbindung (Hot-Plug/Reconnect):
         // gleicher Ablauf wie beim Boot – Konfiguration anwenden oder nur lesen.
         if (g_dsp_connected && !was_connected) {
-            ESP_LOGI(TAG, "BP10 erkannt – Konfiguration wiederherstellen...");
+            ESP_LOGI(TAG, "DSP profile ready – initializing device state...");
             dsp_boot_apply_task(NULL);
         }
 
         // Bei Trennung: Status vermerken
         if (!g_dsp_connected && was_connected) {
             ESP_LOGI(TAG, "BP10 getrennt – warte auf Wiederverbindung.");
+            g_dsp_ns_state = false;
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -146,13 +154,8 @@ static void init_usb_host(void)
     // verbundene Geräte asynchron.
     ESP_LOGI(TAG, "USB-Host läuft dauerhaft (Client-Task aktiv).");
 
-    // Kurzer Check ob bereits ein Device angeschlossen ist
-    if (usb_host_ctrl_is_device_connected()) {
-        g_dsp_connected = true;
-        ESP_LOGI(TAG, "MVSilicon-Gerät bereits verbunden (Callback-Benachrichtigung).");
-    } else {
-        ESP_LOGI(TAG, "Kein Device beim Start – USB-Host wartet auf Hot-Plug.");
-    }
+    g_dsp_connected = false;
+    ESP_LOGI(TAG, "USB transport waits for a supported device profile.");
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +200,14 @@ static void dsp_boot_apply_task(void *arg)
 
     // Kurze Wartezeit für USB-Stabilität nach Hot-Plug
     vTaskDelay(pdMS_TO_TICKS(500));
+
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (!device->valid) return;
+    if (device->kind == MVS_DEVICE_GENERIC_ACP) {
+        ESP_LOGI(TAG, "Generic ACP: read-only reconnect initialization; A800X NVS ignored");
+        dsp_boot_readonly_task(NULL);
+        return;
+    }
 
     // Prüfen ob eine gespeicherte Konfiguration existiert
     if (!nvs_settings_has_dsp_config()) {
@@ -351,12 +362,14 @@ static void dsp_test_task(void *arg)
     uint8_t report[256];
     uint16_t report_len;
     esp_err_t err;
+    uint8_t ns_effect_id = dsp_model_get_effect_id_ns();
+    if (ns_effect_id == 0) goto test_end;
 
     // ---------- 1. Noise Suppressor lesen ----------
     ESP_LOGI(TAG, "=== Noise Suppressor Test ===");
     ESP_LOGI(TAG, "Schritt 1: Noise Suppressor lesen...");
 
-    mvs_build_query_frame(MVS_EFFECT_NOISE_SUPPRESSOR, frame, sizeof(frame));
+    mvs_build_query_frame(ns_effect_id, frame, sizeof(frame));
     mvs_prepare_hid_report(frame, 5, report);
     err = usb_host_ctrl_send_report(report, sizeof(report));
     if (err != ESP_OK) {
@@ -399,7 +412,7 @@ static void dsp_test_task(void *arg)
 
     // ---------- 3. Erneut lesen + bestätigen ----------
     ESP_LOGI(TAG, "Schritt 3: Noise Suppressor erneut lesen...");
-    mvs_build_query_frame(MVS_EFFECT_NOISE_SUPPRESSOR, frame, sizeof(frame));
+    mvs_build_query_frame(ns_effect_id, frame, sizeof(frame));
     mvs_prepare_hid_report(frame, 5, report);
     err = usb_host_ctrl_send_report(report, sizeof(report));
     if (err == ESP_OK) {
@@ -429,7 +442,7 @@ static void dsp_test_task(void *arg)
 
     // ---------- 5. Erneut lesen + bestätigen ----------
     ESP_LOGI(TAG, "Schritt 5: Noise Suppressor erneut lesen...");
-    mvs_build_query_frame(MVS_EFFECT_NOISE_SUPPRESSOR, frame, sizeof(frame));
+    mvs_build_query_frame(ns_effect_id, frame, sizeof(frame));
     mvs_prepare_hid_report(frame, 5, report);
     err = usb_host_ctrl_send_report(report, sizeof(report));
     if (err == ESP_OK) {

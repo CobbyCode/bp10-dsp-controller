@@ -8,7 +8,10 @@ idf_component_register(
     SRCS
         "main.c"
         "usb_host_ctrl.c"
+        "mvs_usb_profile.c"
         "mvs_protocol.c"
+        "mvs_device_profile.c"
+        "mvs_device_runtime.c"
         "dsp_model.c"
         "nvs_settings.c"
         "wifi_manager.c"

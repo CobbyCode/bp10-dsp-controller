@@ -154,7 +154,7 @@ void ota_perform_self_test(void);
 
 /** Aktuelle Firmware-Version (wird in CMakeLists.txt/project() gesetzt) */
 #ifndef APP_VERSION
-#define APP_VERSION "0.3.6"
+#define APP_VERSION "0.4.0"
 #endif
 
 #ifdef __cplusplus

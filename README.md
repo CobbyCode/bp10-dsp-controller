@@ -107,8 +107,14 @@ idf.py build
 ## Test
 
 ```bash
-idf.py test
+tests/host/run.sh
 ```
+
+The host regression suite exercises ACP catalog parsing, exact name/type
+mapping, USB transport/setup selection, schema-aware PreEQ handling, Classic
+DRC decoding and array writes, and A800X wire-frame compatibility. The legacy
+ESP-IDF Unity sources under `main/test/` remain available for target-side test
+firmware but are not part of the normal application build.
 
 ## BIN-Pfade (nach Build)
 

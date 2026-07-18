@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 - 2026-07-19
+
+- Add a constrained `generic_acp_classic` profile for the confirmed
+  `0x8888:0x1719` transport, with catalog-discovered Noise Suppressor, Virtual
+  Bass, PreEQ, and Full-Band Music DRC support.
+- Preserve the A800X as a fixed `0x8888:0x171E` profile with byte-compatible
+  PreEQ/DRC frames, existing NVS persistence, and all five established modules.
+- Select and release the confirmed USB interface dynamically and rebuild the
+  active DSP profile after hot-plug events.
+- Add schema-aware PreEQ and DRC adapters, capability-driven API/UI behavior,
+  and strict Generic persistence boundaries.
+- Add host regression coverage for transport setup, ACP discovery, Classic DRC,
+  and direct A800X frame comparison against the 0.3.7 baseline.
+
 ## 0.3.7 - 2026-07-18
 
 - Apply complete stored Noise Suppressor, Virtual Bass, PreEQ, and DRC states
