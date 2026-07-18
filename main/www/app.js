@@ -42,11 +42,11 @@
     { enabled:true,  type:4, frequency_hz:35,    q:0.800, gain_db:0 },
     { enabled:true,  type:0, frequency_hz:55,    q:3.500, gain_db:1.5 },
     { enabled:true,  type:0, frequency_hz:85,    q:3.500, gain_db:1.5 },
-    { enabled:false, type:0, frequency_hz:0,     q:0,     gain_db:0 },
-    { enabled:false, type:0, frequency_hz:0,     q:0,     gain_db:0 },
     { enabled:false, type:0, frequency_hz:20000, q:0.707, gain_db:0 },
-    { enabled:false, type:0, frequency_hz:0,     q:0,     gain_db:0 },
-    { enabled:false, type:0, frequency_hz:0,     q:0,     gain_db:0 }
+    { enabled:false, type:0, frequency_hz:20000, q:0.707, gain_db:0 },
+    { enabled:false, type:0, frequency_hz:20000, q:0.707, gain_db:0 },
+    { enabled:false, type:0, frequency_hz:20000, q:0.707, gain_db:0 },
+    { enabled:false, type:0, frequency_hz:20000, q:0.707, gain_db:0 }
   ];
   const wifiForm = $('wifi-form');
   const wifiSsid = $('wifi-ssid');

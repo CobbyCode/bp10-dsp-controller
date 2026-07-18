@@ -568,6 +568,20 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
 
     err = dsp_model_update_preeq(&requested);
     if (err != ESP_OK) return send_error(req, 500, "Failed to write PreEQ");
+
+    // Gleiche Normalisierung wie in dsp_model_update_preeq anwenden,
+    // damit der memcmp-Vergleich nicht an reparierten korrumpierten
+    // deaktivierten Filtern scheitert.
+    for (int i = 0; i < 10; i++) {
+        mvs_preeq_filter_t *f = &requested.filters[i];
+        if (!f->enabled && f->frequency_hz == 0 && f->q_raw == 0) {
+            f->type = MVS_FILTER_PK;
+            f->frequency_hz = 20000;
+            f->q_raw = 724;
+            f->gain_raw = 0;
+        }
+    }
+
     dsp_profile_t readback;
     err = dsp_model_readback(&readback);
     if (err != ESP_OK || memcmp(&requested, &readback.preeq, sizeof(requested)) != 0) {

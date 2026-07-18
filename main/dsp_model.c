@@ -119,12 +119,14 @@ void dsp_model_get_default_profile(dsp_profile_t *profile)
     profile->preeq.filters[4].q_raw = 3584;
     profile->preeq.filters[4].gain_raw = 384;
 
-    // F5-F9: disabled/zero
-    // F7: disabled but has default 20 kHz, Q 0.707
-    profile->preeq.filters[7].enabled = 0;
-    profile->preeq.filters[7].type = MVS_FILTER_PK;
-    profile->preeq.filters[7].frequency_hz = 20000;
-    profile->preeq.filters[7].q_raw = 724;
+    // F5-F9: disabled, neutral defaults (PK 20 kHz, 0 dB, Q 0.707)
+    for (int i = 5; i < 10; i++) {
+        profile->preeq.filters[i].enabled = 0;
+        profile->preeq.filters[i].type = MVS_FILTER_PK;
+        profile->preeq.filters[i].frequency_hz = 20000;
+        profile->preeq.filters[i].q_raw = 724;  // 0.707 * 1024
+        profile->preeq.filters[i].gain_raw = 0;
+    }
 
     // DRC: Factory Full Band
     profile->drc.enabled = true;
@@ -510,9 +512,30 @@ esp_err_t dsp_model_update_preeq(const mvs_preeq_state_t *state)
 {
     if (!state) return ESP_ERR_INVALID_ARG;
 
+    // Defensiver Schutz: Korrumpierte deaktivierte Filter reparieren.
+    // Nur Slots mit (disabled && frequency_hz == 0 && q_raw == 0) werden
+    // auf neutrale Werte (PK / 20 kHz / 0 dB / Q 0.707) gesetzt.
+    // Bereits konfigurierte deaktivierte Filter bleiben unverändert.
+    mvs_preeq_state_t normalized = *state;
+    int repaired = 0;
+    for (int i = 0; i < 10; i++) {
+        mvs_preeq_filter_t *f = &normalized.filters[i];
+        if (!f->enabled && f->frequency_hz == 0 && f->q_raw == 0) {
+            f->type = MVS_FILTER_PK;
+            f->frequency_hz = 20000;
+            f->q_raw = 724;  // 0.707 * 1024
+            f->gain_raw = 0;
+            repaired++;
+        }
+    }
+    if (repaired > 0) {
+        ESP_LOGI(TAG, "PreEQ: repaired %d corrupted disabled filters to "
+                       "neutral values (PK/20kHz/0dB/Q0.707)", repaired);
+    }
+
     ESP_LOGI(TAG, "PreEQ-State-Update (vollständiger State)");
     uint8_t frame[128];
-    esp_err_t err = mvs_build_preeq_full_frame(state, frame, sizeof(frame));
+    esp_err_t err = mvs_build_preeq_full_frame(&normalized, frame, sizeof(frame));
     if (err != ESP_OK) return err;
     return send_mvs_command(frame, 112);
 }
