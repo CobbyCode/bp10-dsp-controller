@@ -35,7 +35,7 @@
 #include "cJSON.h"
 #include "app_config.h"
 
-static const char *TAG = "a800x_ota";
+static const char *TAG = "bp10_ota";
 
 // ---------------------------------------------------------------------------
 // Mutex
@@ -312,8 +312,8 @@ static esp_err_t ota_validate_app_image(void)
                  app_desc.date, app_desc.time);
 
         // Projektname prüfen
-        if (strcmp(app_desc.project_name, "a800x_dsp_controller") != 0) {
-            ota_set_error("Wrong project: %s (expected: a800x_dsp_controller)",
+        if (strcmp(app_desc.project_name, "bp10_dsp_controller") != 0) {
+            ota_set_error("Wrong project: %s (expected: bp10_dsp_controller)",
                           app_desc.project_name);
             return ESP_ERR_INVALID_VERSION;
         }
@@ -527,14 +527,14 @@ void ota_perform_self_test(void)
     ESP_LOGI(TAG, "=== OTA-Rollback-Selbsttest ===");
 
     // Selbsttest: minimale Boot-Validierung
-    // Der Test prüft nur Dinge, die NICHT vom A800X-DSP abhängen.
+    // Der Test prüft nur Dinge, die NICHT vom BP10-DSP abhängen.
     bool test_ok = true;
     const char *fail_reason = NULL;
 
     // 1. NVS lesbar (einfacher Lese-Test)
     {
         nvs_handle_t nvs_handle;
-        esp_err_t nvs_err = nvs_open("a800x", NVS_READONLY, &nvs_handle);
+        esp_err_t nvs_err = nvs_open("bp10", NVS_READONLY, &nvs_handle);
         if (nvs_err != ESP_OK) {
             test_ok = false;
             fail_reason = "NVS nicht lesbar";

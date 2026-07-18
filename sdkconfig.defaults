@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 PaulsKlaue
 # SPDX-License-Identifier: MIT
 #
-# sdkconfig.defaults — ESP32-S3 AIYIMA A800X DSP Controller
+# sdkconfig.defaults — ESP32-S3 BP10 DSP Controller
 #
 
 # --- Chip target ---

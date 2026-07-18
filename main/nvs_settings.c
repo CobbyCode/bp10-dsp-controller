@@ -11,7 +11,7 @@
 #include "nvs.h"
 #include "esp_check.h"
 
-static const char *TAG = "a800x_nvs";
+static const char *TAG = "bp10_nvs";
 
 // NVS-Handle (global, lazy initialized)
 static nvs_handle_t s_nvs_handle = 0;
@@ -28,7 +28,7 @@ static esp_err_t open_nvs(void)
 {
     if (s_nvs_opened) return ESP_OK;
 
-    esp_err_t err = nvs_open(A800X_NVS_NAMESPACE, NVS_READWRITE, &s_nvs_handle);
+    esp_err_t err = nvs_open(BP10_NVS_NAMESPACE, NVS_READWRITE, &s_nvs_handle);
     if (err == ESP_OK) {
         s_nvs_opened = true;
     }

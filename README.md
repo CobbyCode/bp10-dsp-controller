@@ -1,4 +1,4 @@
-# AIYIMA A800X DSP Controller
+# AIYIMA BP10 DSP Controller
 
 Ein eigenständiger ESP32-S3-USB-Host-Controller für den MVSilicon-DSP im AIYIMA A800X.
 
@@ -41,7 +41,7 @@ alias get_idf='. ~/esp/esp-idf-v6.0.2/export.sh'
 ## Projektstruktur
 
 ```
-a800x-dsp-controller/
+bp10-dsp-controller/
 ├── CMakeLists.txt             # Top-Level CMake
 ├── sdkconfig.defaults         # SDK-Vorgaben für ESP32-S3
 ├── partitions.csv             # Partitionstabelle (16 MB)
@@ -87,7 +87,7 @@ a800x-dsp-controller/
 | `dsp_model` | DSP-Zustandsmodell: Noise Suppressor, Virtual Bass, PreEQ, DRC, Silence Detector |
 | `nvs_settings` | Nichtflüchtige Speicherung: WiFi-Zugangsdaten, DSP-Profile, Gerätename |
 | `wifi_manager` | WLAN: SoftAP + Captive Portal, Heim-WLAN-Verbindung, Provisioning |
-| `mdns_service` | mDNS-Anmeldung: `a800x-XXXX.local` |
+| `mdns_service` | mDNS-Anmeldung: `bp10-xxxx.local` |
 | `http_server` | HTTP-Server (ESP HTTP Server), statische Dateien, REST-API-Routing |
 | `api_handlers` | REST-API-Endpunkte: DSP-Status, Parameter setzen, Profile, OTA, Config |
 | `web_ui` | Eingebettete Web-UI-Assets (HTML, CSS, JS) |
@@ -98,7 +98,7 @@ a800x-dsp-controller/
 ## Build
 
 ```bash
-cd /path/to/a800x-dsp-controller
+cd /path/to/bp10-dsp-controller
 source ~/esp/esp-idf-v6.0.2/export.sh
 idf.py set-target esp32s3
 idf.py build
@@ -113,7 +113,7 @@ idf.py test
 ## BIN-Pfade (nach Build)
 
 ```
-build/a800x_dsp_controller.bin       # Bootloader + App
+build/bp10_dsp_controller.bin       # Bootloader + App
 build/ota_data_initial.bin           # OTA-Daten-Initialisierung
 build/partitions.bin                 # Partitionstabelle
 build/bootloader/bootloader.bin      # Bootloader
@@ -121,15 +121,15 @@ build/bootloader/bootloader.bin      # Bootloader
 
 ## Netzwerkmodell
 
-1. **Erstes Setup:** SoftAP (`a800x-XXXX`) + Captive Portal → Heim-WLAN eingeben
-2. **Normalbetrieb:** Verbindung zum Heim-WLAN, mDNS: `a800x-XXXX.local`
-3. **Name änderbar:** z. B. `a800x-left` / `a800x-right`
+1. **Erstes Setup:** SoftAP (`bp10-xxxx`) + Captive Portal → Heim-WLAN eingeben
+2. **Normalbetrieb:** Verbindung zum Heim-WLAN, mDNS: `bp10-xxxx.local`
+3. **Name änderbar:** z. B. `bp10-left` / `bp10-right`
 4. **IP:** wird in der Oberfläche angezeigt
 5. **Nach Konfiguration:** WLAN kann deaktiviert werden (Konfiguration nur nach Power-Cycle)
 
 ## Wichtige Hinweise
 
-- **Kein DSP-Flash-Save (`0xFD`) beim Booten** — der A800X speichert Parameter nicht dauerhaft
+- **Kein DSP-Flash-Save (`0xFD`) beim Booten** — der BP10 speichert Parameter nicht dauerhaft
 - **PEQ:** Vollständigen PreEQ-Zustand lesen, nur gewünschte Felder ändern, vollständig zurückschreiben
 - **USB-Host:** ESP32-S3 native USB-Host-Fähigkeit (kein externer USB-Host-Controller nötig)
 

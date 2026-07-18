@@ -14,7 +14,7 @@
 #include "esp_log.h"
 #include "esp_log_buffer.h"
 
-static const char *TAG = "a800x_dsp";
+static const char *TAG = "bp10_dsp";
 
 // Internes Cache des DSP-Zustands
 static dsp_profile_t s_current_profile;
@@ -62,6 +62,8 @@ esp_err_t dsp_model_init(void)
 void dsp_model_get_default_profile(dsp_profile_t *profile)
 {
     memset(profile, 0, sizeof(dsp_profile_t));
+
+    // Factory defaults derived from the AIYIMA A800X BP1048B2 implementation.
 
     // Noise Suppressor: Factory Defaults
     profile->noise_suppressor_enabled = true;

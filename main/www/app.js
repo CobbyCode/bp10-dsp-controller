@@ -1,4 +1,4 @@
-// A800X DSP Controller — Web UI Logic
+// BP10 DSP Controller — Web UI Logic
 (function() {
   'use strict';
 
@@ -961,7 +961,7 @@
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'a800x-dsp-config.json';
+      a.download = 'bp10-dsp-config.json';
       a.click();
     } catch (e) {
       alert('Export failed: ' + e.message);
@@ -1063,7 +1063,7 @@
       // Build apply payload
       const payload = {
         schema_version: 1,
-        type: 'a800x-dsp-config',
+        type: 'bp10-dsp-config',
         dsp: dsp
       };
       const result = await api('POST', '/dsp/apply', payload);

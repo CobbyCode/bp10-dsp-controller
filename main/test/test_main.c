@@ -3,7 +3,7 @@
 //
 // test_main.c — Test-Einstiegspunkt
 //
-// Test-Suite für das A800X DSP Controller Projekt.
+// Test-Suite für das BP10 DSP Controller Projekt.
 // Verwendet das ESP-IDF-Test-Framework (Unity).
 //
 

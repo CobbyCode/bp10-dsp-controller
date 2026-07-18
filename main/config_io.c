@@ -17,7 +17,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 
-static const char *TAG = "a800x_config";
+static const char *TAG = "bp10_config";
 
 // ---------------------------------------------------------------------------
 // Export
@@ -33,7 +33,7 @@ esp_err_t config_io_export(char **json)
     // Schema & Version
     cJSON_AddNumberToObject(root, "schema_version", DSP_CONFIG_SCHEMA_VERSION);
     cJSON_AddStringToObject(root, "app_version", APP_VERSION);
-    cJSON_AddStringToObject(root, "type", "a800x-dsp-config");
+    cJSON_AddStringToObject(root, "type", "bp10-dsp-config");
 
     // DSP-Konfiguration aus NVS laden
     dsp_profile_t config;
@@ -181,7 +181,7 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
 
     // Typ prüfen
     cJSON *type = cJSON_GetObjectItem(root, "type");
-    if (!cJSON_IsString(type) || strcmp(type->valuestring, "a800x-dsp-config") != 0) {
+    if (!cJSON_IsString(type) || strcmp(type->valuestring, "bp10-dsp-config") != 0) {
         cJSON_Delete(root);
         ESP_LOGE(TAG, "Import: Falscher oder fehlender 'type'");
         return ESP_ERR_INVALID_ARG;

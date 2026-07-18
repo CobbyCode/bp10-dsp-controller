@@ -15,25 +15,25 @@
 extern "C" {
 #endif
 
-#define A800X_WIFI_SSID_MAX_LEN    32
-#define A800X_WIFI_PASS_MAX_LEN    64
-#define A800X_HOSTNAME_MAX_LEN     32
+#define BP10_WIFI_SSID_MAX_LEN    32
+#define BP10_WIFI_PASS_MAX_LEN    64
+#define BP10_HOSTNAME_MAX_LEN     32
 
 // WiFi-Zugangsdaten
 typedef struct {
-    char ssid[A800X_WIFI_SSID_MAX_LEN];
-    char password[A800X_WIFI_PASS_MAX_LEN];
+    char ssid[BP10_WIFI_SSID_MAX_LEN];
+    char password[BP10_WIFI_PASS_MAX_LEN];
 } wifi_creds_t;
 
 // Gerätekonfiguration
 typedef struct {
-    char hostname[A800X_HOSTNAME_MAX_LEN];
+    char hostname[BP10_HOSTNAME_MAX_LEN];
     bool wifi_auto_off;
     uint32_t wifi_setup_timeout_s;
 } device_config_t;
 
 /**
- * @brief NVS initialisieren (Namespace a800x).
+ * @brief NVS initialisieren (Namespace bp10).
  */
 esp_err_t nvs_settings_init(void);
 

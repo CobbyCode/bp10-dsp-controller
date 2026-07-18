@@ -12,7 +12,7 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 
-static const char *TAG = "a800x_http";
+static const char *TAG = "bp10_http";
 
 // ---------------------------------------------------------------------------
 // Static-File-Handler (eingebettete Web-UI)

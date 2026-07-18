@@ -52,7 +52,7 @@ esp_err_t wifi_manager_init(void);
 /**
  * @brief SoftAP starten (für erstes Setup / Captive Portal).
  *
- * @param hostname AP-Hostname (z. B. "a800x-3f21")
+ * @param hostname AP-Hostname (z. B. "bp10-xxxx")
  * @return esp_err_t
  */
 esp_err_t wifi_manager_start_softap(const char *hostname);
@@ -105,7 +105,7 @@ esp_err_t wifi_manager_get_ip_str(char *ip, size_t max_len);
 esp_err_t wifi_manager_get_sta_ssid(char *ssid, size_t max_len);
 
 /**
- * @brief Geräte-Hostname abrufen (z. B. "a800x-4018").
+ * @brief Geräte-Hostname abrufen (z. B. "bp10-xxxx").
  */
 esp_err_t wifi_manager_get_hostname(char *hostname, size_t max_len);
 
@@ -158,7 +158,7 @@ bool wifi_manager_auto_off_enabled(void);
 /**
  * @brief Hostnamen aus MAC-Adresse generieren.
  *
- * z. B. "a800x-3f21" aus MAC "7C:DF:A1:E3:3F:21"
+ * z. B. "bp10-xxxx" aus MAC "7C:DF:A1:E3:3F:21"
  *
  * @param hostname Ausgabepuffer
  * @param max_len Puffergröße

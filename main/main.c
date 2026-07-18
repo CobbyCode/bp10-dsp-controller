@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 PaulsKlaue
 // SPDX-License-Identifier: MIT
 //
-// main.c — AIYIMA A800X DSP Controller — Einstiegspunkt
+// main.c — AIYIMA BP10 DSP Controller — Einstiegspunkt
 //
 // Initialisierungsreihenfolge:
 // 1. NVS
@@ -13,7 +13,7 @@
 //    - Ohne gespeicherte Konfiguration: nur aktuellen Zustand lesen
 // 5. Normalbetrieb: Web-UI, OTA, Config-IO
 //
-// Wichtig: Das System startet auch ohne angeschlossenen A800X.
+// Wichtig: Das System startet auch ohne angeschlossenen BP10.
 // Die Web-UI zeigt dann "DSP nicht verfügbar".
 //
 // Niemals DSP-Flash-Save 0xFD verwenden!
@@ -38,7 +38,7 @@
 #include "ota_update.h"
 #include "config_io.h"
 
-static const char *TAG = "a800x_main";
+static const char *TAG = "bp10_main";
 
 // Globaler DSP-Status (für API/UI)
 bool g_dsp_connected = false;
@@ -51,13 +51,13 @@ static void init_network(void);
 static void init_http_server(void);
 static void dsp_boot_apply_task(void *arg);
 static void dsp_boot_readonly_task(void *arg);
-#if CONFIG_A800X_DIAGNOSTIC_NS_BOOT_TEST
+#if CONFIG_BP10_DIAGNOSTIC_NS_BOOT_TEST
 static void dsp_test_task(void *arg);
 #endif
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== AIYIMA A800X DSP Controller ===");
+    ESP_LOGI(TAG, "=== AIYIMA BP10 DSP Controller ===");
     ESP_LOGI(TAG, "Firmware version: " APP_VERSION);
 
     // 1. NVS initialisieren
@@ -84,7 +84,7 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "Initialisierung abgeschlossen.");
-    ESP_LOGI(TAG, "Web-UI: http://%s.local", CONFIG_A800X_MDNS_DEFAULT_HOSTNAME);
+    ESP_LOGI(TAG, "Web-UI: http://%s.local", CONFIG_BP10_MDNS_DEFAULT_HOSTNAME);
 
     // Normalbetrieb: Status-Loop
     while (1) {
@@ -95,13 +95,13 @@ void app_main(void)
         // Bei späterer Verbindung (Hot-Plug/Reconnect):
         // gleicher Ablauf wie beim Boot – Konfiguration anwenden oder nur lesen.
         if (g_dsp_connected && !was_connected) {
-            ESP_LOGI(TAG, "A800X erkannt – Konfiguration wiederherstellen...");
+            ESP_LOGI(TAG, "BP10 erkannt – Konfiguration wiederherstellen...");
             dsp_boot_apply_task(NULL);
         }
 
         // Bei Trennung: Status vermerken
         if (!g_dsp_connected && was_connected) {
-            ESP_LOGI(TAG, "A800X getrennt – warte auf Wiederverbindung.");
+            ESP_LOGI(TAG, "BP10 getrennt – warte auf Wiederverbindung.");
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -294,7 +294,7 @@ static void dsp_boot_apply_task(void *arg)
              fail_count > 0 ? " (Teilfehler – nicht bestätigte Werte werden "
                               "nicht erneut geschrieben)" : "");
 
-#if CONFIG_A800X_DIAGNOSTIC_NS_BOOT_TEST
+#if CONFIG_BP10_DIAGNOSTIC_NS_BOOT_TEST
     ESP_LOGW(TAG, "Diagnosemodus: Noise-Suppressor-Boot-Test wird gestartet");
     xTaskCreatePinnedToCore(dsp_test_task, "dsp_test", 4096, NULL, 3, NULL, 1);
 #endif
@@ -341,7 +341,7 @@ static void dsp_boot_readonly_task(void *arg)
 // 5. Erneut lesen → bestätigen
 // 6. Globalen Status aktualisieren
 // ---------------------------------------------------------------------------
-#if CONFIG_A800X_DIAGNOSTIC_NS_BOOT_TEST
+#if CONFIG_BP10_DIAGNOSTIC_NS_BOOT_TEST
 static void dsp_test_task(void *arg)
 {
     ESP_LOGI(TAG, "DSP-Test-Task gestartet");
@@ -483,11 +483,11 @@ static void init_network(void)
 
     device_config_t device_config = {
         .wifi_auto_off = false,
-        .wifi_setup_timeout_s = A800X_WIFI_SETUP_TIMEOUT_S,
+        .wifi_setup_timeout_s = BP10_WIFI_SETUP_TIMEOUT_S,
     };
     if (nvs_settings_load_config(&device_config) != ESP_OK) {
         device_config.wifi_auto_off = false;
-        device_config.wifi_setup_timeout_s = A800X_WIFI_SETUP_TIMEOUT_S;
+        device_config.wifi_setup_timeout_s = BP10_WIFI_SETUP_TIMEOUT_S;
     }
     wifi_manager_configure_auto_off(device_config.wifi_auto_off,
                                     device_config.wifi_setup_timeout_s,
@@ -506,8 +506,8 @@ static void init_network(void)
     }
 
     // Setup-Window: Begrenztes Zeitfenster oder unbegrenzt
-    if (A800X_WIFI_SETUP_TIMEOUT_S > 0) {
-        ESP_LOGI(TAG, "Setup-Window: %d Sekunden", A800X_WIFI_SETUP_TIMEOUT_S);
+    if (BP10_WIFI_SETUP_TIMEOUT_S > 0) {
+        ESP_LOGI(TAG, "Setup-Window: %d Sekunden", BP10_WIFI_SETUP_TIMEOUT_S);
     }
 }
 
@@ -516,10 +516,10 @@ static void init_network(void)
 // ---------------------------------------------------------------------------
 static void init_http_server(void)
 {
-    ESP_LOGI(TAG, "HTTP-Server starten (Port %d)...", A800X_HTTP_PORT);
+    ESP_LOGI(TAG, "HTTP-Server starten (Port %d)...", BP10_HTTP_PORT);
 
     http_server_handle_t server;
-    esp_err_t err = http_server_start(&server, A800X_HTTP_PORT);
+    esp_err_t err = http_server_start(&server, BP10_HTTP_PORT);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP-Server-Start fehlgeschlagen: %s", esp_err_to_name(err));
         return;
@@ -528,5 +528,5 @@ static void init_http_server(void)
     // REST-API-Handler registrieren
     api_handlers_register(server);
 
-    ESP_LOGI(TAG, "HTTP-Server läuft auf Port %d", A800X_HTTP_PORT);
+    ESP_LOGI(TAG, "HTTP-Server läuft auf Port %d", BP10_HTTP_PORT);
 }

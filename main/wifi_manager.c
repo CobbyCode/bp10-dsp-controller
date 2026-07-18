@@ -3,7 +3,7 @@
 //
 // wifi_manager.c — WLAN-Management, SoftAP, Captive Portal, Provisioning
 //
-// Vollständige Implementierung des WiFi-Managers für den A800X DSP Controller.
+// Vollständige Implementierung des WiFi-Managers für den BP10 DSP Controller.
 // Unterstützt SoftAP (erstes Setup) und Station-Modus (Heim-WLAN).
 //
 // Lifecycle:
@@ -37,7 +37,7 @@
 #include "lwip/dns.h"
 #include "esp_netif.h"
 
-static const char *TAG = "a800x_wifi";
+static const char *TAG = "bp10_wifi";
 
 // ---------------------------------------------------------------------------
 // Event-Bits
@@ -566,9 +566,9 @@ void wifi_manager_generate_hostname(char *hostname, size_t max_len)
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
 
-    // Letzte 2 Bytes der MAC als hex: "a800x-3f21"
+    // Letzte 2 Bytes der MAC als hex: "bp10-xxxx"
     snprintf(hostname, max_len, "%s-%02x%02x",
-             CONFIG_A800X_MDNS_DEFAULT_HOSTNAME,
+             CONFIG_BP10_MDNS_DEFAULT_HOSTNAME,
              mac[4], mac[5]);
 
     // Für spätere Referenz speichern

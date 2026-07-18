@@ -17,7 +17,7 @@ extern "C" {
  *
  * Registriert den Hostnamen sowie den HTTP-Service (_http._tcp).
  *
- * @param hostname Hostname (z. B. "a800x-3f21")
+ * @param hostname Hostname (z. B. "bp10-xxxx")
  * @return esp_err_t
  */
 esp_err_t mdns_service_start(const char *hostname);

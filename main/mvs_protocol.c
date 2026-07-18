@@ -11,7 +11,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 
-static const char *TAG = "a800x_mvs_proto";
+static const char *TAG = "bp10_mvs_proto";
 
 // ---------------------------------------------------------------------------
 // Interne Hilfsfunktionen

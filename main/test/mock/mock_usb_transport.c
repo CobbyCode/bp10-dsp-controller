@@ -9,7 +9,7 @@
 #include <string.h>
 #include "esp_log.h"
 
-static const char *TAG = "a800x_test_mock";
+static const char *TAG = "bp10_test_mock";
 
 static uint8_t s_response[256];
 static uint16_t s_response_len = 0;

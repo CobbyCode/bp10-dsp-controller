@@ -41,7 +41,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
-static const char *TAG = "a800x_api";
+static const char *TAG = "bp10_api";
 
 // ---------------------------------------------------------------------------
 // Hilfsfunktionen
@@ -934,11 +934,11 @@ static esp_err_t handler_wifi_config_get(httpd_req_t *req)
                       creds.ssid[0] != '\0';
     device_config_t config = {
         .wifi_auto_off = false,
-        .wifi_setup_timeout_s = A800X_WIFI_SETUP_TIMEOUT_S,
+        .wifi_setup_timeout_s = BP10_WIFI_SETUP_TIMEOUT_S,
     };
     if (nvs_settings_load_config(&config) != ESP_OK) {
         config.wifi_auto_off = false;
-        config.wifi_setup_timeout_s = A800X_WIFI_SETUP_TIMEOUT_S;
+        config.wifi_setup_timeout_s = BP10_WIFI_SETUP_TIMEOUT_S;
     }
 
     cJSON *root = cJSON_CreateObject();
@@ -969,7 +969,7 @@ static esp_err_t handler_wifi_config_post(httpd_req_t *req)
     cJSON *password = cJSON_GetObjectItem(json, "password");
     cJSON *auto_off = cJSON_GetObjectItem(json, "auto_off");
     if (!cJSON_IsString(ssid) || ssid->valuestring[0] == '\0' ||
-        strlen(ssid->valuestring) >= A800X_WIFI_SSID_MAX_LEN) {
+        strlen(ssid->valuestring) >= BP10_WIFI_SSID_MAX_LEN) {
         cJSON_Delete(json);
         return send_error(req, 400, "SSID must be 1 to 31 characters long");
     }
@@ -984,7 +984,7 @@ static esp_err_t handler_wifi_config_post(httpd_req_t *req)
     strncpy(creds.ssid, ssid->valuestring, sizeof(creds.ssid) - 1);
     if (cJSON_IsString(password) && password->valuestring[0] != '\0') {
         size_t pass_len = strlen(password->valuestring);
-        if (pass_len < 8 || pass_len >= A800X_WIFI_PASS_MAX_LEN) {
+        if (pass_len < 8 || pass_len >= BP10_WIFI_PASS_MAX_LEN) {
             cJSON_Delete(json);
             return send_error(req, 400, "Wi-Fi password must be 8 to 63 characters long");
         }
@@ -995,7 +995,7 @@ static esp_err_t handler_wifi_config_post(httpd_req_t *req)
 
     device_config_t config = {
         .wifi_auto_off = cJSON_IsTrue(auto_off),
-        .wifi_setup_timeout_s = A800X_WIFI_SETUP_TIMEOUT_S,
+        .wifi_setup_timeout_s = BP10_WIFI_SETUP_TIMEOUT_S,
     };
     nvs_settings_load_hostname(config.hostname, sizeof(config.hostname));
     cJSON_Delete(json);

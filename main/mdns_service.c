@@ -10,7 +10,7 @@
 #include "esp_log.h"
 #include "mdns.h"
 
-static const char *TAG = "a800x_mdns";
+static const char *TAG = "bp10_mdns";
 
 esp_err_t mdns_service_start(const char *hostname)
 {
@@ -21,12 +21,12 @@ esp_err_t mdns_service_start(const char *hostname)
 
     // Standard-MDNS-Instanz
     char instance[64];
-    snprintf(instance, sizeof(instance), "A800X DSP Controller (%s)", hostname);
+    snprintf(instance, sizeof(instance), "BP10 DSP Controller (%s)", hostname);
     ESP_ERROR_CHECK(mdns_instance_name_set(instance));
 
     // HTTP-Service registrieren
     ESP_ERROR_CHECK(
-        mdns_service_add(instance, "_http", "_tcp", A800X_HTTP_PORT, NULL, 0));
+        mdns_service_add(instance, "_http", "_tcp", BP10_HTTP_PORT, NULL, 0));
 
     ESP_LOGI(TAG, "mDNS gestartet: %s.local -> %s", hostname, instance);
     return ESP_OK;
@@ -39,7 +39,7 @@ esp_err_t mdns_service_update_hostname(const char *hostname)
     ESP_ERROR_CHECK(mdns_hostname_set(hostname));
 
     char instance[64];
-    snprintf(instance, sizeof(instance), "A800X DSP Controller (%s)", hostname);
+    snprintf(instance, sizeof(instance), "BP10 DSP Controller (%s)", hostname);
     ESP_ERROR_CHECK(mdns_instance_name_set(instance));
 
     ESP_LOGI(TAG, "mDNS aktualisiert: %s.local", hostname);

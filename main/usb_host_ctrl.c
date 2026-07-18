@@ -29,7 +29,7 @@
 #include "usb/usb_types_ch9.h"
 #include "driver/gpio.h"
 
-static const char *TAG = "a800x_usb_host";
+static const char *TAG = "bp10_usb_host";
 
 // ---------------------------------------------------------------------------
 // Interner Zustand
@@ -124,14 +124,14 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
                          dev_desc->idVendor, dev_desc->idProduct,
                          dev_desc->bcdUSB, dev_desc->bDeviceClass);
 
-                if (dev_desc->idVendor == A800X_USB_VID &&
-                    dev_desc->idProduct == A800X_USB_PID) {
-                    ESP_LOGI(TAG, "✅ A800X DSP ERKANNT (VID:0x%04X PID:0x%04X)",
-                             A800X_USB_VID, A800X_USB_PID);
+                if (dev_desc->idVendor == BP10_USB_VID &&
+                    dev_desc->idProduct == BP10_USB_PID) {
+                    ESP_LOGI(TAG, "✅ BP10 DSP ERKANNT (VID:0x%04X PID:0x%04X)",
+                             BP10_USB_VID, BP10_USB_PID);
                 } else {
-                    ESP_LOGW(TAG, "⚠️ Fremdgerät: VID:0x%04X PID:0x%04X (warte auf A800X 0x%04X:0x%04X)",
+                    ESP_LOGW(TAG, "⚠️ Fremdgerät: VID:0x%04X PID:0x%04X (warte auf BP10 0x%04X:0x%04X)",
                              dev_desc->idVendor, dev_desc->idProduct,
-                             A800X_USB_VID, A800X_USB_PID);
+                             BP10_USB_VID, BP10_USB_PID);
                 }
             } else {
                 ESP_LOGW(TAG, "USB-EVENT: Device an Adresse %d – Descriptor nicht lesbar",
@@ -171,7 +171,7 @@ static void device_callback(const usb_host_client_event_msg_t *event_msg,
         }
 
         case USB_HOST_CLIENT_EVENT_DEV_GONE: {
-            ESP_LOGW(TAG, "A800X getrennt – USB-Device-Handle wird freigegeben");
+            ESP_LOGW(TAG, "BP10 getrennt – USB-Device-Handle wird freigegeben");
 
             usb_device_handle_t old_handle = s_device_handle;
 
@@ -323,9 +323,9 @@ esp_err_t usb_host_ctrl_init(void)
     xTaskCreatePinnedToCore(
         usb_host_lib_task,
         "usb_lib",
-        A800X_USB_HOST_TASK_STACK_SIZE,
+        BP10_USB_HOST_TASK_STACK_SIZE,
         NULL,
-        A800X_USB_HOST_TASK_PRIORITY,
+        BP10_USB_HOST_TASK_PRIORITY,
         NULL,
         0
     );
@@ -334,9 +334,9 @@ esp_err_t usb_host_ctrl_init(void)
     xTaskCreatePinnedToCore(
         usb_host_client_task,
         "usb_client",
-        A800X_USB_HOST_TASK_STACK_SIZE,
+        BP10_USB_HOST_TASK_STACK_SIZE,
         NULL,
-        A800X_USB_HOST_TASK_PRIORITY,
+        BP10_USB_HOST_TASK_PRIORITY,
         NULL,
         0
     );
@@ -348,11 +348,11 @@ esp_err_t usb_host_ctrl_init(void)
 
 void usb_host_vbus_enable(bool enable)
 {
-#if A800X_GPIO_VBUS_ENABLE > 0
-    gpio_set_direction(A800X_GPIO_VBUS_ENABLE, GPIO_MODE_OUTPUT);
-    gpio_set_level(A800X_GPIO_VBUS_ENABLE,
-                   enable ? A800X_VBUS_ENABLE_ACTIVE_HIGH
-                          : !A800X_VBUS_ENABLE_ACTIVE_HIGH);
+#if BP10_GPIO_VBUS_ENABLE > 0
+    gpio_set_direction(BP10_GPIO_VBUS_ENABLE, GPIO_MODE_OUTPUT);
+    gpio_set_level(BP10_GPIO_VBUS_ENABLE,
+                   enable ? BP10_VBUS_ENABLE_ACTIVE_HIGH
+                          : !BP10_VBUS_ENABLE_ACTIVE_HIGH);
     ESP_LOGI(TAG, "VBUS %s", enable ? "EIN" : "AUS");
 #else
     (void)enable;
