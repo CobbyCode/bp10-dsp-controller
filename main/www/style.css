@@ -343,25 +343,19 @@ input[type="url"] { flex: 1; }
 /* --- OTA Firmware Update --- */
 .ota-status {
   display: flex;
-  gap: 32px;
+  gap: 24px;
   margin-bottom: 24px;
   flex-wrap: wrap;
 }
-.ota-status-block {
+.ota-info-item {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
 }
-.ota-status-label {
-  font-size: 0.66rem;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+.ota-info-item .label {
+  margin: 0;
 }
-.ota-status-value {
-  font-size: 0.95rem;
-  color: var(--text);
-  font-weight: 600;
+.ota-info-value {
   word-break: break-word;
 }
 
