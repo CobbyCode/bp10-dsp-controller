@@ -34,7 +34,7 @@
         <summary><span>Noise Suppressor</span><span id="noise-state" class="module-state">NOT READ</span></summary>
         <div class="module-editor">
           <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="noise-suppressor"><span class="switch"></span></label>
-          <div class="parameter-grid">
+          <div class="parameter-grid dsp-param-grid">
             <label class="field"><span>Threshold (dB)</span><input type="number" id="noise-threshold" step="0.01"></label>
             <label class="field"><span>Ratio</span><input type="number" id="noise-ratio" step="1"></label>
             <label class="field"><span>Attack (ms)</span><input type="number" id="noise-attack" step="1"></label>
@@ -47,7 +47,7 @@
         <summary><span>Virtual Bass</span><span id="bass-state" class="module-state">NOT READ</span></summary>
         <div class="module-editor">
           <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="virtual-bass"><span class="switch"></span></label>
-          <div class="parameter-grid">
+          <div class="parameter-grid dsp-param-grid">
             <label class="field"><span>Cutoff (Hz)</span><input type="number" id="bass-cutoff" step="1"></label>
             <label class="field"><span>Intensity (%)</span><input type="number" id="bass-intensity" step="1"></label>
           </div>
@@ -66,7 +66,7 @@
         <summary><span>PreEQ</span><span id="preeq-state" class="module-state">NOT READ</span></summary>
         <div class="module-editor">
           <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="preeq-enable" disabled><span class="switch"></span></label>
-          <div class="parameter-grid">
+          <div class="parameter-grid dsp-param-grid">
             <label class="field"><span>Pre-Gain (dB)</span><input type="number" id="preeq-pregain" step="0.01" disabled placeholder="Not read"></label>
           </div>
           <div class="eq-preview"><canvas id="preeq-canvas" width="900" height="300"></canvas><div class="preview-legend"><span class="actual">DSP Readback</span><span class="preview">Local Preview</span></div></div>
@@ -78,7 +78,7 @@
         <summary><span>DRC / Compressor</span><span id="drc-state" class="module-state">NOT READ</span></summary>
         <div class="module-editor">
           <label class="switch-row"><span><strong>Full-Band Enabled</strong></span><input type="checkbox" id="drc-enable" disabled><span class="switch"></span></label>
-          <div class="parameter-grid">
+          <div class="parameter-grid dsp-param-grid">
             <label class="field"><span>Pre-Gain (dB)</span><input type="number" id="drc-pregain" step="0.01" disabled></label>
             <label class="field"><span>Threshold (dB)</span><input type="number" id="drc-threshold" step="0.01" disabled></label>
             <label class="field"><span>Ratio</span><input type="number" id="drc-ratio" step="0.01" disabled></label>

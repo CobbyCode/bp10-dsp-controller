@@ -198,6 +198,13 @@ input[type="url"]:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 
 .module-state.is-error { color: var(--red); }
 .module-editor { padding: 0 14px 14px; border-top: 1px solid var(--line); }
 .parameter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+
+/* DSP numeric fields — compact desktop grid, not full card width */
+.dsp-param-grid {
+  grid-template-columns: repeat(2, minmax(220px, 380px));
+  justify-content: start;
+  gap: 16px 18px;
+}
 .module-editor.is-dirty { box-shadow: inset 3px 0 var(--orange); }
 
 .toggle {
@@ -264,7 +271,7 @@ input[type="url"] { flex: 1; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .hidden { display: none; }
-@media (max-width: 620px) { .parameter-grid, .info-grid { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .parameter-grid, .info-grid, .dsp-param-grid { grid-template-columns: 1fr; } }
 
 /* Connection Banner */
 .connection-banner {
