@@ -340,10 +340,93 @@ input[type="url"] { flex: 1; }
 .preview-item span { font-size:.75rem; color:var(--text-dim); }
 }
 
+/* --- OTA Firmware Update --- */
+.ota-status {
+  display: flex;
+  gap: 32px;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+}
+.ota-status-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ota-status-label {
+  font-size: 0.66rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.ota-status-value {
+  font-size: 0.95rem;
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.ota-upload-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ota-file-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ota-file-name {
+  font-size: 0.88rem;
+  color: var(--text);
+  word-break: break-word;
+}
+.ota-file-size {
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.btn-clear {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1;
+  padding: 3px 7px;
+}
+.btn-clear:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.ota-progress-label {
+  font-size: 0.84rem;
+  color: var(--text-dim);
+  margin: 0 0 8px 0;
+}
+
+#ota-result {
+  margin-top: 14px;
+  font-size: 0.85rem;
+}
+#ota-result.success { color: var(--green); }
+#ota-result.error   { color: var(--red); }
+#ota-result.warning { color: var(--orange); }
+
 @media (max-width: 480px) {
   .info-grid { grid-template-columns: 1fr; }
   .input-row { flex-direction: column; }
   .wifi-ssid-row { flex-direction:column; }
   .wifi-network { align-items:flex-start; flex-direction:column; }
   .wifi-network span { text-align:left; }
+  .ota-status {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .ota-upload-area {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

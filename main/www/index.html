@@ -168,34 +168,35 @@
   <section id="ota">
     <h2>Firmware Update</h2>
 
-    <!-- Current + uploaded version info -->
-    <div class="info-row" id="ota-versions">
-      <span class="label">Current:</span>
-      <span id="ota-current-version">-</span>
-      <span class="label" style="margin-left:16px">Running on:</span>
-      <span id="ota-running-partition">-</span>
-    </div>
-    <div class="info-row hidden" id="ota-new-info">
-      <span class="label">New:</span>
-      <span id="ota-new-version">-</span>
-      <span class="label" style="margin-left:16px">Target:</span>
-      <span id="ota-target-partition">-</span>
+    <!-- Status line -->
+    <div class="ota-status">
+      <div class="ota-status-block">
+        <span class="ota-status-label">Current version</span>
+        <span class="ota-status-value" id="ota-current-version">-</span>
+      </div>
+      <div class="ota-status-block">
+        <span class="ota-status-label">Running on</span>
+        <span class="ota-status-value" id="ota-running-partition">-</span>
+      </div>
     </div>
 
-    <!-- File upload -->
-    <div class="input-row" id="ota-upload-form">
-      <input type="file" id="ota-file-input" accept=".bin" style="display:none">
-      <button id="btn-ota-select" class="btn btn-secondary">Choose .bin File</button>
-      <span id="ota-file-name" class="file-hint">No file selected</span>
-      <span id="ota-file-size" class="file-hint"></span>
+    <!-- Upload area -->
+    <div class="ota-upload-area">
+      <input type="file" id="ota-file-input" accept=".bin" class="hidden">
+      <button id="btn-ota-select" class="btn btn-secondary">Select Firmware</button>
+      <div id="ota-file-info" class="hidden ota-file-info">
+        <span id="ota-file-name" class="ota-file-name"></span>
+        <span id="ota-file-size" class="ota-file-size"></span>
+        <button id="btn-ota-clear" class="btn-clear" title="Clear selection">✕</button>
+      </div>
+      <div id="ota-action-area" class="hidden">
+        <button id="btn-ota-install" class="btn btn-primary">Install Update</button>
+      </div>
     </div>
 
-    <!-- Upload confirm + progress -->
-    <div class="input-row hidden" id="ota-confirm-row">
-      <button id="btn-ota-install" class="btn btn-primary">Install Firmware</button>
-      <button id="btn-ota-cancel" class="btn btn-secondary">Cancel</button>
-    </div>
+    <!-- Progress -->
     <div class="hidden" id="ota-progress-area">
+      <p class="ota-progress-label">Uploading firmware …</p>
       <div class="progress-bar">
         <div class="progress-fill" id="ota-progress-fill"></div>
       </div>
