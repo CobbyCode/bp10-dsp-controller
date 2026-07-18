@@ -344,7 +344,7 @@ input[type="url"] { flex: 1; }
 .ota-status {
   display: flex;
   gap: 32px;
-  margin-bottom: 22px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
 }
 .ota-status-block {
@@ -368,13 +368,13 @@ input[type="url"] { flex: 1; }
 .ota-upload-area {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   flex-wrap: wrap;
 }
 .ota-file-info {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .ota-file-name {
   font-size: 0.88rem;
@@ -395,10 +395,19 @@ input[type="url"] { flex: 1; }
   font-size: 0.78rem;
   line-height: 1;
   padding: 3px 7px;
+  margin-left: 2px;
 }
 .btn-clear:hover {
   color: var(--red);
   border-color: var(--red);
+}
+
+#ota-action-area {
+  margin-left: 6px;
+}
+
+#ota-progress-area {
+  margin-top: 16px;
 }
 
 .ota-progress-label {
@@ -408,12 +417,27 @@ input[type="url"] { flex: 1; }
 }
 
 #ota-result {
-  margin-top: 14px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
   font-size: 0.85rem;
+  line-height: 1.4;
 }
-#ota-result.success { color: var(--green); }
-#ota-result.error   { color: var(--red); }
-#ota-result.warning { color: var(--orange); }
+#ota-result.success {
+  background: #102a1a;
+  border: 1px solid var(--green);
+  color: var(--green);
+}
+#ota-result.error {
+  background: #2a1010;
+  border: 1px solid var(--red);
+  color: var(--red);
+}
+#ota-result.warning {
+  background: #2a2010;
+  border: 1px solid var(--orange);
+  color: var(--orange);
+}
 
 @media (max-width: 480px) {
   .info-grid { grid-template-columns: 1fr; }

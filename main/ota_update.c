@@ -268,14 +268,14 @@ static esp_err_t ota_validate_app_image(void)
     // Magic check
     if (header->magic != ESP_IMAGE_HEADER_MAGIC) {
         esp_partition_munmap(mmap_handle);
-        ota_set_error("Kein gültiges ESP-Image (Magic: 0x%02X)", header->magic);
+        ota_set_error("Not a valid ESP image (magic: 0x%02X)", header->magic);
         return ESP_ERR_INVALID_CRC;
     }
 
     // Chip check: ESP32-S3 = 9
     if (header->chip_id != 9) {
         esp_partition_munmap(mmap_handle);
-        ota_set_error("Falscher Chip: %d (erwartet: 9 = ESP32-S3)", header->chip_id);
+        ota_set_error("Wrong chip: %d (expected: 9 = ESP32-S3)", header->chip_id);
         return ESP_ERR_INVALID_VERSION;
     }
 
@@ -287,7 +287,7 @@ static esp_err_t ota_validate_app_image(void)
     // Grobe Größenprüfung: Bootloader ist < 64KB, Partition-Table < 4KB
     if (image_size < 65536) {
         esp_partition_munmap(mmap_handle);
-        ota_set_error("Image zu klein (%lu Bytes) – Bootloader/Partition-Table?",
+        ota_set_error("Image too small (%lu bytes) – bootloader/partition table?",
                       (unsigned long)image_size);
         return ESP_ERR_INVALID_SIZE;
     }
@@ -295,7 +295,7 @@ static esp_err_t ota_validate_app_image(void)
     // Merged-Flash erkennen: zu groß (> 8MB für reine App)
     if (image_size > 8 * 1024 * 1024) {
         esp_partition_munmap(mmap_handle);
-        ota_set_error("Image zu groß (%lu Bytes) – Merged-Flash?",
+        ota_set_error("Image too large (%lu bytes) – merged flash image?",
                       (unsigned long)image_size);
         return ESP_ERR_INVALID_SIZE;
     }
@@ -313,7 +313,7 @@ static esp_err_t ota_validate_app_image(void)
 
         // Projektname prüfen
         if (strcmp(app_desc.project_name, "a800x_dsp_controller") != 0) {
-            ota_set_error("Falsches Projekt: %s (erwartet: a800x_dsp_controller)",
+            ota_set_error("Wrong project: %s (expected: a800x_dsp_controller)",
                           app_desc.project_name);
             return ESP_ERR_INVALID_VERSION;
         }
@@ -352,7 +352,7 @@ esp_err_t ota_upload_begin(size_t content_length)
     // Nächste inaktive Partition bestimmen
     s_target_partition = esp_ota_get_next_update_partition(NULL);
     if (!s_target_partition) {
-        ota_set_error("Keine OTA-Update-Partition gefunden");
+        ota_set_error("No OTA update partition found");
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -363,21 +363,21 @@ esp_err_t ota_upload_begin(size_t content_length)
 
     // Nicht in laufende Partition schreiben
     if (s_running_partition && s_target_partition->address == s_running_partition->address) {
-        ota_set_error("Zielpartition ist die laufende Partition – Abbruch");
+        ota_set_error("Target partition is the running partition – aborted");
         s_target_partition = NULL;
         return ESP_ERR_INVALID_STATE;
     }
 
     // Größe prüfen
     if (content_length > s_target_partition->size) {
-        ota_set_error("Firmware (%zu Bytes) > Partition (%lu Bytes)",
+        ota_set_error("Firmware (%zu bytes) exceeds partition size (%lu bytes)",
                       content_length, (unsigned long)s_target_partition->size);
         s_target_partition = NULL;
         return ESP_ERR_INVALID_SIZE;
     }
 
     if (content_length < 65536) {
-        ota_set_error("Firmware zu klein (%zu Bytes) – keine gültige App?", content_length);
+        ota_set_error("Firmware image is too small (%zu bytes) and is not a valid application image", content_length);
         s_target_partition = NULL;
         return ESP_ERR_INVALID_SIZE;
     }
@@ -385,7 +385,7 @@ esp_err_t ota_upload_begin(size_t content_length)
     // OTA beginnen
     esp_err_t err = esp_ota_begin(s_target_partition, content_length, &s_ota_handle);
     if (err != ESP_OK) {
-        ota_set_error("esp_ota_begin fehlgeschlagen: %s", esp_err_to_name(err));
+        ota_set_error("esp_ota_begin failed: %s", esp_err_to_name(err));
         s_target_partition = NULL;
         return err;
     }
@@ -415,7 +415,7 @@ esp_err_t ota_upload_write(const uint8_t *data, size_t len)
 
     esp_err_t err = esp_ota_write(s_ota_handle, data, len);
     if (err != ESP_OK) {
-        ota_set_error("esp_ota_write fehlgeschlagen: %s", esp_err_to_name(err));
+        ota_set_error("esp_ota_write failed: %s", esp_err_to_name(err));
         ota_set_state(OTA_STATE_FAILED);
         esp_ota_abort(s_ota_handle);
         s_ota_handle = 0;
@@ -442,13 +442,13 @@ esp_err_t ota_upload_finish(void)
     ota_get_status(&st);
 
     if (st.state != OTA_STATE_RECEIVING) {
-        ota_set_error("OTA nicht im Empfangsmodus (State: %d)", st.state);
+        ota_set_error("OTA not in receiving state (state: %d)", st.state);
         return ESP_ERR_INVALID_STATE;
     }
 
     // Prüfen dass alle Daten empfangen wurden
     if (st.received_bytes != st.total_bytes) {
-        ota_set_error("Unvollständiger Upload: %zu/%zu Bytes",
+        ota_set_error("Incomplete upload: %zu/%zu bytes",
                       st.received_bytes, st.total_bytes);
         esp_ota_abort(s_ota_handle);
         s_ota_handle = 0;
@@ -466,7 +466,7 @@ esp_err_t ota_upload_finish(void)
     esp_err_t err = esp_ota_end(s_ota_handle);
     s_ota_handle = 0;
     if (err != ESP_OK) {
-        ota_set_error("esp_ota_end fehlgeschlagen: %s", esp_err_to_name(err));
+        ota_set_error("esp_ota_end failed: %s", esp_err_to_name(err));
         ota_set_state(OTA_STATE_FAILED);
         // Kein expliziter Abort nötig – esp_ota_end hat bereits aufgeräumt
         return err;
@@ -483,7 +483,7 @@ esp_err_t ota_upload_finish(void)
     // Boot-Partition setzen
     err = esp_ota_set_boot_partition(s_target_partition);
     if (err != ESP_OK) {
-        ota_set_error("esp_ota_set_boot_partition fehlgeschlagen: %s",
+        ota_set_error("esp_ota_set_boot_partition failed: %s",
                       esp_err_to_name(err));
         ota_set_state(OTA_STATE_FAILED);
         return err;
@@ -510,7 +510,7 @@ void ota_upload_abort(void)
         s_ota_handle = 0;
     }
     s_target_partition = NULL;
-    ota_set_error("Upload abgebrochen");
+    ota_set_error("Upload aborted");
     ota_set_state(OTA_STATE_FAILED);
 }
 
