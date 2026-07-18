@@ -104,12 +104,8 @@
       if (data.dsp_connected) {
         dspStatus.textContent = 'DSP ✓';
         dspStatus.className = 'status-dot dot-on';
-        dspSection.classList.remove('hidden');
-        if (dspUnavailable) dspUnavailable.classList.add('hidden');
-        if (data.dsp_noise_suppressor !== undefined) {
-          const nsEl = $('noise-suppressor');
-          if (nsEl) nsEl.checked = data.dsp_noise_suppressor;
-        }
+        // Controls remain hidden until /dsp has returned confirmed hardware
+        // values. Showing unchecked HTML defaults here causes OFF -> ON jumps.
       } else {
         dspStatus.textContent = 'DSP ✗';
         dspStatus.className = 'status-dot dot-off';
@@ -194,10 +190,9 @@
         auto_off: wifiAutoOff.checked
       });
       if (result.status !== 'ok') throw new Error(result.error || 'Save failed');
-      wifiFormMessage.textContent = 'Saved — connecting…';
+      wifiFormMessage.textContent = 'Saved — connecting… The setup network will close after a successful connection.';
       wifiFormMessage.className = 'form-message';
-      await loadWifiConfig();
-      await waitForWifiConnection();
+      await waitForWifiConnection(result.data && result.data.mdns_address);
     } catch (error) {
       wifiFormMessage.textContent = error.message;
       wifiFormMessage.className = 'form-message is-error';
@@ -268,21 +263,44 @@
     }
   });
 
-  async function waitForWifiConnection() {
+  async function waitForWifiConnection(mdnsAddress) {
+    let transitionStarted = false;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 750));
-      const status = await api('GET', '/wifi/status');
-      if (status.sta_connected) {
-        wifiFormMessage.textContent = `Connected · ${status.sta_ip || 'IP assigned'}`;
-        wifiFormMessage.className = 'form-message is-success';
-        sysIp.textContent = status.sta_ip || '-';
-        return;
+      try {
+        const status = await api('GET', '/wifi/status');
+        if (status.sta_connected) {
+          wifiFormMessage.textContent = `Connected · ${status.sta_ip || 'IP assigned'}`;
+          wifiFormMessage.className = 'form-message is-success';
+          sysIp.textContent = status.sta_ip || '-';
+          return;
+        }
+        if (status.connection_state === 'failed') {
+          throw new Error(status.connection_message || 'Connection failed; Setup AP remains available');
+        }
+        wifiFormMessage.textContent = status.connection_message || 'Connecting…';
+      } catch (error) {
+        // Losing 192.168.4.1 is the expected success-path transition: GOT_IP
+        // stops the setup AP. Do not turn that into a red "Failed to fetch".
+        if (error instanceof TypeError || /fetch|network/i.test(error.message || '')) {
+          transitionStarted = true;
+          wifiFormMessage.textContent = 'Setup network closed; checking the home-network connection. ';
+          if (mdnsAddress) {
+            const link = document.createElement('a');
+            link.href = mdnsAddress;
+            link.textContent = 'Open the controller after your device rejoins the home Wi-Fi.';
+            wifiFormMessage.appendChild(link);
+          } else {
+            wifiFormMessage.appendChild(document.createTextNode(
+              'Rejoin your home Wi-Fi and open the controller there.'));
+          }
+          wifiFormMessage.className = 'form-message is-success';
+          continue;
+        }
+        throw error;
       }
-      if (status.connection_state === 'failed') {
-        throw new Error(status.connection_message || 'Connection failed; Setup AP remains available');
-      }
-      wifiFormMessage.textContent = status.connection_message || 'Connecting…';
     }
+    if (transitionStarted) return;
     throw new Error('Connection is taking longer than expected; Setup AP remains available');
   }
 
@@ -300,8 +318,8 @@
       dspSection.classList.remove('hidden');
       if (dspUnavailable) dspUnavailable.classList.add('hidden');
 
-      setNoiseForm(data);
-      setBassForm(data);
+      if (!noiseEditor.classList.contains('is-dirty')) setNoiseForm(data);
+      if (!bassEditor.classList.contains('is-dirty')) setBassForm(data);
       if (data.silence && data.silence.valid === true) {
         setSilenceForm(data.silence.enabled);
       } else {
@@ -342,10 +360,10 @@
     }));
 
   $('btn-bass-read').addEventListener('click', async () => {
-    $('virtual-bass').checked = false;
+    $('virtual-bass').checked = true;
     $('bass-cutoff').value = 42;
     $('bass-intensity').value = 4;
-    $('bass-enhanced').checked = false;
+    $('bass-enhanced').checked = true;
     bassEditor.classList.add('is-dirty');
     bassMessage.textContent = 'Factory values loaded locally · Apply to write';
     bassMessage.className = 'form-message';
@@ -499,9 +517,9 @@
   });
 
   $('btn-silence-read').addEventListener('click', async () => {
-    $('silence-detector').checked = false;
+    $('silence-detector').checked = true;
     silenceEditor.classList.add('is-dirty');
-    silenceMessage.textContent = 'Factory value OFF loaded locally · Apply to write';
+    silenceMessage.textContent = 'Factory value ON loaded locally · Apply to write';
     silenceMessage.className = 'form-message';
   });
 
@@ -954,6 +972,7 @@
 
   // --- DSP Configuration Export/Import ---
   let importPreviewData = null;
+  let importFileDsp = null;  // Original-DSP-Daten aus der Import-Datei
 
   $('btn-dsp-export').addEventListener('click', async () => {
     try {
@@ -1037,6 +1056,7 @@
         const json = JSON.parse(text);
         const result = await api('POST', '/dsp/config/import', json);
         if (result.status !== 'ok') throw new Error(result.error || 'Import validation failed');
+        importFileDsp = json.dsp;  // Vollständige DSP-Daten für Apply behalten
         showImportPreview(result);
       } catch (e) {
         alert('Import failed: ' + e.message);
@@ -1058,8 +1078,8 @@
     msg.textContent = 'Applying and verifying…';
     msg.className = 'form-message';
     try {
-      // Parse the import data into the apply endpoint format
-      const dsp = importPreviewData.data.dsp;
+      // Use original file DSP data (not stripped preview) for full validation
+      const dsp = importFileDsp || importPreviewData.data.dsp;
       // Build apply payload
       const payload = {
         schema_version: 1,

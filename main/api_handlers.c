@@ -340,7 +340,6 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
     if (err != ESP_OK) {
         return send_error(req, 500, "Failed to set Noise Suppressor");
     }
-
     dsp_profile_t readback;
     err = dsp_model_readback(&readback);
     bool confirmed = err == ESP_OK &&
@@ -423,10 +422,14 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
     if (err != ESP_OK) {
         return send_error(req, 500, "Failed to set Virtual Bass");
     }
+
     dsp_profile_t readback;
     err = dsp_model_readback(&readback);
     bool confirmed = err == ESP_OK && readback.virtual_bass_enabled == requested;
-    if (confirmed && full_state) {
+    // An OFF operation intentionally writes only the block-enable selector.
+    // The remaining parameters stay unchanged and must not be compared with
+    // possibly edited/stale form values. ON writes and verifies all fields.
+    if (confirmed && full_state && requested) {
         confirmed = readback.virtual_bass_cutoff_hz == requested_cutoff &&
                     readback.virtual_bass_intensity_pct == requested_intensity &&
                     readback.virtual_bass_enhanced == requested_enhanced;
@@ -1007,12 +1010,22 @@ static esp_err_t handler_wifi_config_post(httpd_req_t *req)
     wifi_manager_configure_auto_off(config.wifi_auto_off,
                                     config.wifi_setup_timeout_s, true);
     wifi_manager_note_user_activity();
-    err = wifi_manager_connect_sta(creds.ssid, creds.password);
-    if (err != ESP_OK) return send_error(req, 500, "Unable to start Wi-Fi connection attempt");
+    // Do not connect from inside the HTTP handler: AP/STA may change channel
+    // immediately and GOT_IP intentionally tears down the setup AP. Either can
+    // cut off this response and surface as a misleading browser "Failed to
+    // fetch" although credentials were saved successfully.
+    err = wifi_manager_schedule_sta_connect(creds.ssid, creds.password, 1500);
+    if (err != ESP_OK) return send_error(req, 500, "Unable to schedule Wi-Fi connection attempt");
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "auto_off", config.wifi_auto_off);
-    cJSON_AddStringToObject(result, "message", "Saved; connecting");
+    char hostname[32];
+    wifi_manager_get_hostname(hostname, sizeof(hostname));
+    char mdns_addr[48];
+    snprintf(mdns_addr, sizeof(mdns_addr), "http://%s.local", hostname);
+    cJSON_AddStringToObject(result, "message", "Saved; connecting shortly");
+    cJSON_AddStringToObject(result, "mdns_address", mdns_addr);
+    cJSON_AddNumberToObject(result, "connect_delay_ms", 1500);
     return send_ok(req, result);
 }
 

@@ -29,11 +29,11 @@ TEST_CASE("Default profile values", "[dsp_model]")
     TEST_ASSERT_EQUAL(2, profile.noise_suppressor_attack_ms);
     TEST_ASSERT_EQUAL(100, profile.noise_suppressor_release_ms);
 
-    // Virtual Bass: Aus
-    TEST_ASSERT_FALSE(profile.virtual_bass_enabled);
+    // Virtual Bass factory state
+    TEST_ASSERT_TRUE(profile.virtual_bass_enabled);
     TEST_ASSERT_EQUAL(42, profile.virtual_bass_cutoff_hz);
     TEST_ASSERT_EQUAL(4, profile.virtual_bass_intensity_pct);
-    TEST_ASSERT_FALSE(profile.virtual_bass_enhanced);
+    TEST_ASSERT_TRUE(profile.virtual_bass_enhanced);
 
     // PreEQ: Factory Defaults
     TEST_ASSERT_TRUE(profile.preeq.block_enabled);

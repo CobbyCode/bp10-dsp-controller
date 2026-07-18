@@ -50,7 +50,6 @@ static const char *TAG = "bp10_wifi";
 // Timing-Konstanten
 // ---------------------------------------------------------------------------
 #define WIFI_USER_IDLE_TIMEOUT_S      1800   // Auto-Off bei Inaktivität
-#define WIFI_AP_SHUTDOWN_DELAY_S      30     // AP nach erfolgreicher STA-Verbindung
 #define WIFI_FALLBACK_RETRY_WINDOW_S  60     // Neuverbindungsversuche bevor AP wieder an
 #define WIFI_STA_RECONNECT_INTERVAL_S 5      // Pause zwischen Reconnect-Versuchen
 
@@ -85,22 +84,26 @@ static char s_connection_state[16] = "idle";
 static char s_connection_message[80] = "Not connected";
 
 // Neue Timer für AP-Shutdown und Fallback
-static int64_t s_ap_shutdown_deadline_us = 0;   // 0 = kein Timer aktiv
 static int64_t s_fallback_deadline_us = 0;       // 0 = kein Timer aktiv
 static int64_t s_last_reconnect_attempt_us = 0;
 static bool s_ap_start_requested = false;        // AP-Start durch Fallback anfordern
 static bool s_wifi_started = false;              // ob esp_wifi_start() bereits lief
+static uint32_t s_recovery_timeout_s = WIFI_FALLBACK_RETRY_WINDOW_S;
+static bool s_setup_captive_active = false;
+static bool s_sta_connect_pending = false;
+static int64_t s_sta_connect_deadline_us = 0;
+static char s_pending_sta_ssid[33] = {0};
+static char s_pending_sta_password[65] = {0};
 
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
-static void start_ap_shutdown_timer(void);
-static void cancel_ap_shutdown_timer(void);
 static void start_fallback_timer(void);
 static void cancel_fallback_timer(void);
 static void lifecycle_set_state(wifi_lifecycle_state_t new_state);
 static void do_stop_softap(void);
 static void do_start_softap(void);
+static void log_runtime_wifi_state(const char *context);
 
 // ---------------------------------------------------------------------------
 // Lifecycle Task (ersetzt den alten wifi_auto_off_task)
@@ -110,13 +113,27 @@ static void wifi_lifecycle_task(void *arg)
     while (s_initialized) {
         int64_t now = esp_timer_get_time();
 
-        // --- AP-Shutdown-Timer (30 s nach erfolgreicher STA-Verbindung) ---
-        if (s_ap_shutdown_deadline_us > 0 && now >= s_ap_shutdown_deadline_us) {
-            ESP_LOGI(TAG, "AP-Shutdown-Timer abgelaufen — SoftAP wird gestoppt");
-            do_stop_softap();
-            s_ap_shutdown_deadline_us = 0;
-            if (s_lifecycle_state == WIFI_LIFECYCLE_CONNECTED_AP_TRANSITION) {
-                lifecycle_set_state(WIFI_LIFECYCLE_CONNECTED_STA_ONLY);
+        // Provisioning must not alter the AP/channel while the HTTP handler is
+        // still returning its acknowledgement. The handler only schedules the
+        // work; this task performs it after the response has left the socket.
+        if (s_sta_connect_pending && now >= s_sta_connect_deadline_us) {
+            char ssid[sizeof(s_pending_sta_ssid)];
+            char password[sizeof(s_pending_sta_password)];
+            if (s_state_lock) xSemaphoreTake(s_state_lock, portMAX_DELAY);
+            snprintf(ssid, sizeof(ssid), "%s", s_pending_sta_ssid);
+            snprintf(password, sizeof(password), "%s", s_pending_sta_password);
+            memset(s_pending_sta_password, 0, sizeof(s_pending_sta_password));
+            s_sta_connect_pending = false;
+            s_sta_connect_deadline_us = 0;
+            if (s_state_lock) xSemaphoreGive(s_state_lock);
+            esp_err_t err = wifi_manager_connect_sta(ssid, password);
+            memset(password, 0, sizeof(password));
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Deferred Wi-Fi connection could not start: %s",
+                         esp_err_to_name(err));
+                snprintf(s_connection_state, sizeof(s_connection_state), "failed");
+                snprintf(s_connection_message, sizeof(s_connection_message),
+                         "Unable to start Wi-Fi connection attempt");
             }
         }
 
@@ -185,26 +202,16 @@ static void lifecycle_set_state(wifi_lifecycle_state_t new_state)
     s_lifecycle_state = new_state;
 }
 
-static void start_ap_shutdown_timer(void)
-{
-    s_ap_shutdown_deadline_us = esp_timer_get_time() +
-                                (int64_t)WIFI_AP_SHUTDOWN_DELAY_S * 1000000LL;
-    ESP_LOGI(TAG, "AP-Shutdown-Timer gestartet (%d s)", WIFI_AP_SHUTDOWN_DELAY_S);
-}
-
-static void cancel_ap_shutdown_timer(void)
-{
-    if (s_ap_shutdown_deadline_us > 0) {
-        ESP_LOGI(TAG, "AP-Shutdown-Timer abgebrochen");
-    }
-    s_ap_shutdown_deadline_us = 0;
-}
-
 static void start_fallback_timer(void)
 {
+    if (s_fallback_deadline_us > 0) {
+        ESP_LOGD(TAG, "Fallback-Timer läuft bereits; Deadline bleibt unverändert");
+        return;
+    }
     s_fallback_deadline_us = esp_timer_get_time() +
-                             (int64_t)WIFI_FALLBACK_RETRY_WINDOW_S * 1000000LL;
-    ESP_LOGI(TAG, "Fallback-Timer gestartet (%d s)", WIFI_FALLBACK_RETRY_WINDOW_S);
+                             (int64_t)s_recovery_timeout_s * 1000000LL;
+    ESP_LOGI(TAG, "Fallback-Timer gestartet (%lu s)",
+             (unsigned long)s_recovery_timeout_s);
 }
 
 static void cancel_fallback_timer(void)
@@ -217,15 +224,23 @@ static void cancel_fallback_timer(void)
 
 static void do_stop_softap(void)
 {
-    if (!s_softap_active) return;
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&mode);
+    if (!s_softap_active && mode == WIFI_MODE_STA) return;
 
-    ESP_LOGI(TAG, "SoftAP wird gestoppt");
-    // AP-Interface deaktivieren durch leere SSID – WiFi bleibt im APSTA-Mode
-    // (APSTA wird für esp_wifi_scan_start benötigt)
-    wifi_config_t empty_ap = {0};
-    esp_wifi_set_config(WIFI_IF_AP, &empty_ap);
+    ESP_LOGI(TAG, "Setup-SoftAP und Setup-Dienste werden gestoppt");
+    wifi_manager_stop_captive_portal();
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif) {
+        esp_err_t dhcp_err = esp_netif_dhcps_stop(ap_netif);
+        if (dhcp_err != ESP_OK && dhcp_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+            ESP_LOGW(TAG, "AP-DHCP-Server stoppen: %s", esp_err_to_name(dhcp_err));
+        }
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     s_softap_active = false;
-    ESP_LOGI(TAG, "SoftAP deaktiviert, WiFi bleibt in APSTA-Mode");
+    ESP_LOGI(TAG, "SoftAP deaktiviert; WiFi läuft jetzt STA-only");
+    log_runtime_wifi_state("after AP shutdown");
 }
 
 static void do_start_softap(void)
@@ -265,6 +280,37 @@ static void do_start_softap(void)
 
     s_softap_active = true;
     ESP_LOGI(TAG, "SoftAP aktiv: SSID=%s", s_hostname);
+    wifi_manager_start_captive_portal();
+    log_runtime_wifi_state("after setup AP start");
+}
+
+static void log_runtime_wifi_state(const char *context)
+{
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    wifi_config_t ap_config = {0};
+    esp_netif_dhcp_status_t dhcp_status = ESP_NETIF_DHCP_INIT;
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    esp_err_t mode_err = esp_wifi_get_mode(&mode);
+    esp_err_t ap_err = esp_wifi_get_config(WIFI_IF_AP, &ap_config);
+    esp_err_t dhcp_err = ap_netif
+        ? esp_netif_dhcps_get_status(ap_netif, &dhcp_status)
+        : ESP_ERR_NOT_FOUND;
+    const char *mode_name = mode == WIFI_MODE_STA ? "STA" :
+                            mode == WIFI_MODE_AP ? "AP" :
+                            mode == WIFI_MODE_APSTA ? "APSTA" : "NULL";
+    ESP_LOGI(TAG,
+             "Runtime WiFi [%s]: mode=%s(%s), STA=%s, IP=%s, "
+             "AP-SSID=%s(%s), DHCP=%s(%s), setup-captive=%s, "
+             "general-http=independent",
+             context, mode_name, esp_err_to_name(mode_err),
+             s_sta_connected ? "connected" : "disconnected",
+             s_ip_str[0] ? s_ip_str : "none",
+             ap_err == ESP_OK ? (const char *)ap_config.ap.ssid : "unavailable",
+             esp_err_to_name(ap_err),
+             dhcp_err == ESP_OK && dhcp_status == ESP_NETIF_DHCP_STARTED
+                 ? "running" : "stopped",
+             esp_err_to_name(dhcp_err),
+             s_setup_captive_active ? "running" : "stopped");
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +351,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 if (was_connected) {
                     s_sta_connected = false;
                     s_ip_str[0] = '\0';
-                    cancel_ap_shutdown_timer();
                     if (s_disconnected_cb) {
                         s_disconnected_cb();
                     }
@@ -476,15 +521,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                          "Mit Heimnetz verbunden");
                 xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
-                // Lifecycle-Übergang: AP-Shutdown-Timer starten
+                // A valid home-network IP ends setup immediately. The general
+                // HTTP server is interface-independent and remains available.
                 if (s_softap_active) {
-                    ESP_LOGI(TAG, "STA verbunden mit aktivem AP — "
-                             "starte %d s Shutdown-Timer", WIFI_AP_SHUTDOWN_DELAY_S);
-                    start_ap_shutdown_timer();
                     lifecycle_set_state(WIFI_LIFECYCLE_CONNECTED_AP_TRANSITION);
+                    do_stop_softap();
+                    lifecycle_set_state(WIFI_LIFECYCLE_CONNECTED_STA_ONLY);
                 } else {
                     lifecycle_set_state(WIFI_LIFECYCLE_CONNECTED_STA_ONLY);
                 }
+                log_runtime_wifi_state("STA got IP");
 
                 if (s_connected_cb) {
                     s_connected_cb();
@@ -623,7 +669,6 @@ esp_err_t wifi_manager_stop_softap(void)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    cancel_ap_shutdown_timer();
     do_stop_softap();
     return ESP_OK;
 }
@@ -667,18 +712,9 @@ esp_err_t wifi_manager_connect_sta(const char *ssid, const char *password)
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
 
-    // Immer APSTA-Mode – STA-Interface allein reicht nicht für Scan.
-    // AP-Interface existiert, broadcastet aber nur wenn AP-Config gesetzt ist.
-    // Minimale AP-Konfiguration setzen (leere SSID = kein Broadcast),
-    // damit der APSTA-Mode vollständig initialisiert ist und
-    // esp_wifi_scan_start() funktioniert.
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    // Keep setup AP while provisioning; boot with stored credentials is STA-only.
+    esp_wifi_set_mode(s_softap_active ? WIFI_MODE_APSTA : WIFI_MODE_STA);
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    if (!s_softap_active) {
-        wifi_config_t ap_min = {0};
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_min));
-        ESP_LOGD(TAG, "Minimale AP-Konfiguration für APSTA-Mode gesetzt");
-    }
     if (!s_wifi_started) {
         ESP_ERROR_CHECK(esp_wifi_start());
         s_wifi_started = true;
@@ -694,6 +730,30 @@ esp_err_t wifi_manager_connect_sta(const char *ssid, const char *password)
 
     ESP_LOGI(TAG, "WiFi-Verbindungsversuch gestartet");
 
+    return ESP_OK;
+}
+
+esp_err_t wifi_manager_schedule_sta_connect(const char *ssid,
+                                            const char *password,
+                                            uint32_t delay_ms)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    if (!ssid || ssid[0] == '\0') return ESP_ERR_INVALID_ARG;
+
+    if (s_state_lock) xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    snprintf(s_pending_sta_ssid, sizeof(s_pending_sta_ssid), "%s", ssid);
+    snprintf(s_pending_sta_password, sizeof(s_pending_sta_password), "%s",
+             password ? password : "");
+    s_sta_connect_deadline_us = esp_timer_get_time() +
+                                (int64_t)delay_ms * 1000LL;
+    s_sta_connect_pending = true;
+    if (s_state_lock) xSemaphoreGive(s_state_lock);
+
+    snprintf(s_connection_state, sizeof(s_connection_state), "connecting");
+    snprintf(s_connection_message, sizeof(s_connection_message),
+             "Saved; connection starts shortly");
+    ESP_LOGI(TAG, "Wi-Fi station connection scheduled in %lu ms",
+             (unsigned long)delay_ms);
     return ESP_OK;
 }
 
@@ -753,10 +813,7 @@ esp_err_t wifi_manager_get_hostname(char *hostname, size_t max_len)
 
 int wifi_manager_get_ap_shutdown_remaining_sec(void)
 {
-    if (s_ap_shutdown_deadline_us == 0) return 0;
-    int64_t remaining = (s_ap_shutdown_deadline_us - esp_timer_get_time())
-                        / 1000000LL;
-    return remaining > 0 ? (int)remaining : 0;
+    return 0; // setup AP stops synchronously on IP_EVENT_STA_GOT_IP
 }
 
 wifi_lifecycle_state_t wifi_manager_get_lifecycle_state(void)
@@ -844,6 +901,8 @@ void wifi_manager_configure_auto_off(bool enabled, uint32_t initial_timeout_s,
 {
     s_auto_off_enabled = enabled;
     s_credentials_available = credentials_available;
+    s_recovery_timeout_s = initial_timeout_s > 0
+        ? initial_timeout_s : WIFI_FALLBACK_RETRY_WINDOW_S;
     if (enabled && credentials_available && initial_timeout_s > 0) {
         s_auto_off_deadline_us = esp_timer_get_time() +
                                  (int64_t)initial_timeout_s * 1000000LL;
@@ -877,7 +936,8 @@ esp_err_t wifi_manager_start_captive_portal(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Captive Portal gestartet (DNS-Weiterleitung)");
+    s_setup_captive_active = true;
+    ESP_LOGI(TAG, "Setup-Captive-Dienst gestartet (allgemeiner HTTP-Server bleibt separat)");
     esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (ap_netif) {
         esp_netif_dns_info_t dns;
@@ -891,7 +951,8 @@ esp_err_t wifi_manager_start_captive_portal(void)
 
 esp_err_t wifi_manager_stop_captive_portal(void)
 {
-    ESP_LOGI(TAG, "Captive Portal gestoppt");
+    if (s_setup_captive_active) ESP_LOGI(TAG, "Setup-Captive-Dienst gestoppt");
+    s_setup_captive_active = false;
     return ESP_OK;
 }
 
@@ -937,7 +998,6 @@ void wifi_manager_deinit(void)
     s_sta_connected = false;
     s_ip_str[0] = '\0';
     s_sta_ssid[0] = '\0';
-    s_ap_shutdown_deadline_us = 0;
     s_fallback_deadline_us = 0;
     s_wifi_started = false;
     s_connected_cb = NULL;

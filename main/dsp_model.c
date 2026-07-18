@@ -72,14 +72,14 @@ void dsp_model_get_default_profile(dsp_profile_t *profile)
     profile->noise_suppressor_attack_ms = 2;
     profile->noise_suppressor_release_ms = 100;
 
-    // Silence Detector: aus (Standard)
-    profile->silence_detector_enabled = false;
+    // Silence Detector: Hardware-Standard (DSP-chipseitig EIN)
+    profile->silence_detector_enabled = true;
 
     // Virtual Bass: Standard
-    profile->virtual_bass_enabled = false;  // Aus für Workaround
+    profile->virtual_bass_enabled = true;
     profile->virtual_bass_cutoff_hz = 42;
     profile->virtual_bass_intensity_pct = 4;
-    profile->virtual_bass_enhanced = false;
+    profile->virtual_bass_enhanced = true;
 
     // PreEQ: Factory Defaults (siehe Command Reference)
     profile->preeq.block_enabled = true;
@@ -461,13 +461,23 @@ esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
                                             uint16_t intensity_pct,
                                             bool bass_enhanced)
 {
-    const uint16_t values[] = { enable ? 1U : 0U, cutoff_hz,
-                                intensity_pct, bass_enhanced ? 1U : 0U };
-    for (uint8_t selector = MVS_SEL_BLOCK_ENABLE;
-         selector <= MVS_SEL_PARAM_3; selector++) {
+    // Disabling is a single command. Sending parameter writes as part of an
+    // OFF operation can make this DSP reject the sequence and drop off USB.
+    if (!enable) return dsp_model_set_virtual_bass(false);
+
+    // When enabling, turn the block on first; it rejects parameter writes
+    // while disabled.
+    const uint8_t selectors[] = {
+        MVS_SEL_BLOCK_ENABLE,
+        MVS_SEL_PARAM_1, MVS_SEL_PARAM_2, MVS_SEL_PARAM_3,
+    };
+    const uint16_t values[] = {
+        1U, cutoff_hz, intensity_pct, bass_enhanced ? 1U : 0U,
+    };
+    for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
         uint8_t frame[8];
         esp_err_t err = mvs_build_write_frame(MVS_EFFECT_VIRTUAL_BASS,
-                                              selector, values[selector],
+                                              selectors[i], values[i],
                                               frame, sizeof(frame));
         if (err != ESP_OK) return err;
         err = send_mvs_command(frame, sizeof(frame));

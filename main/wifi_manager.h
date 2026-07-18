@@ -72,6 +72,17 @@ esp_err_t wifi_manager_stop_softap(void);
 esp_err_t wifi_manager_connect_sta(const char *ssid, const char *password);
 
 /**
+ * @brief Schedule a station connection after the provisioning HTTP response.
+ *
+ * Credentials are copied into manager-owned RAM. The lifecycle task starts the
+ * connection after delay_ms, allowing the setup client to receive the complete
+ * response before a channel change or SoftAP shutdown can disconnect it.
+ */
+esp_err_t wifi_manager_schedule_sta_connect(const char *ssid,
+                                            const char *password,
+                                            uint32_t delay_ms);
+
+/**
  * @brief Station trennen.
  */
 esp_err_t wifi_manager_disconnect_sta(void);
