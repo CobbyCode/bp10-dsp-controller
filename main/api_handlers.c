@@ -710,6 +710,8 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed.enabled);
+    cJSON_AddBoolToObject(result, "full_band_supported",
+                          confirmed.full_band_supported);
     cJSON_AddNumberToObject(result, "pregain_db", confirmed.pregain_db);
     cJSON_AddNumberToObject(result, "threshold_db", confirmed.threshold_db);
     cJSON_AddNumberToObject(result, "ratio", confirmed.ratio);
