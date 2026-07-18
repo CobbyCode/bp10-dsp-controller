@@ -344,7 +344,7 @@ input[type="url"] { flex: 1; }
 .ota-status {
   display: flex;
   gap: 24px;
-  margin-bottom: 24px;
+  margin-bottom: 32px;
   flex-wrap: wrap;
 }
 .ota-info-item {
@@ -366,9 +366,11 @@ input[type="url"] { flex: 1; }
   flex-wrap: wrap;
 }
 .ota-file-info {
-  display: flex;
   align-items: center;
   gap: 8px;
+}
+.ota-file-info:not(.hidden) {
+  display: flex;
 }
 .ota-file-name {
   font-size: 0.88rem;
