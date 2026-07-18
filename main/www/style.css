@@ -338,7 +338,6 @@ input[type="url"] { flex: 1; }
 .preview-item { background:var(--surface); padding:10px 12px; border-radius:8px; display:flex; flex-direction:column; gap:2px; }
 .preview-item strong { font-size:.8rem; color:var(--accent); }
 .preview-item span { font-size:.75rem; color:var(--text-dim); }
-}
 
 /* --- OTA Firmware Update --- */
 .ota-status {
