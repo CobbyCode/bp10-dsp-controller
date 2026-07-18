@@ -92,6 +92,9 @@ section {
 
 .settings-form { display: grid; gap: 14px; }
 .field { display: grid; gap: 6px; color: var(--text-dim); font-size: .78rem; }
+input, select, button {
+  font-size: 16px;
+}
 .field input,
 .field select,
 input[type="url"] {
@@ -101,7 +104,7 @@ input[type="url"] {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--text);
-  font-size: .92rem;
+  font-size: 16px;
   outline: none;
 }
 .field input:focus,
