@@ -161,38 +161,59 @@ esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile)
     ESP_LOGI(TAG, "Wende DSP-Profil an...");
 
     esp_err_t err;
+    esp_err_t first_err = ESP_OK;
 
     // 1. Noise Suppressor
-    err = dsp_model_set_noise_suppressor(profile->noise_suppressor_enabled);
+    err = dsp_model_set_noise_suppressor_state(
+        profile->noise_suppressor_enabled,
+        profile->noise_suppressor_threshold_raw,
+        profile->noise_suppressor_ratio,
+        profile->noise_suppressor_attack_ms,
+        profile->noise_suppressor_release_ms);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Noise Suppressor set fehlgeschlagen: %s", esp_err_to_name(err));
+        first_err = err;
     }
 
     // 2. Virtual Bass
-    err = dsp_model_set_virtual_bass(profile->virtual_bass_enabled);
+    err = dsp_model_set_virtual_bass_state(
+        profile->virtual_bass_enabled,
+        profile->virtual_bass_cutoff_hz,
+        profile->virtual_bass_intensity_pct,
+        profile->virtual_bass_enhanced);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Virtual Bass set fehlgeschlagen: %s", esp_err_to_name(err));
+        if (first_err == ESP_OK) first_err = err;
     }
 
     // 3. Silence Detector
     err = dsp_model_set_silence_detector(profile->silence_detector_enabled);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Silence Detector set fehlgeschlagen: %s", esp_err_to_name(err));
+        if (first_err == ESP_OK) first_err = err;
     }
 
     // 4. PreEQ
-    if (profile->preeq.block_enabled != s_current_profile.preeq.block_enabled) {
-        dsp_model_set_preeq_enable(profile->preeq.block_enabled);
+    err = dsp_model_update_preeq(&profile->preeq);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "PreEQ-State set fehlgeschlagen: %s", esp_err_to_name(err));
+        if (first_err == ESP_OK) first_err = err;
     }
 
     // 5. DRC
-    if (profile->drc.enabled != s_current_profile.drc.enabled) {
-        dsp_model_set_drc_enable(profile->drc.enabled);
+    err = dsp_model_update_drc(&profile->drc);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "DRC-State set fehlgeschlagen: %s", esp_err_to_name(err));
+        if (first_err == ESP_OK) first_err = err;
     }
 
-    // Profil im Cache speichern
-    memcpy(&s_current_profile, profile, sizeof(dsp_profile_t));
+    if (first_err != ESP_OK) {
+        ESP_LOGW(TAG, "DSP-Profil nur teilweise angewendet: %s",
+                 esp_err_to_name(first_err));
+        return first_err;
+    }
 
+    memcpy(&s_current_profile, profile, sizeof(dsp_profile_t));
     ESP_LOGI(TAG, "DSP-Profil angewendet (kein Flash-Save)");
     return ESP_OK;
 }
@@ -424,8 +445,12 @@ esp_err_t dsp_model_set_noise_suppressor_state(bool enable,
                                                 uint16_t attack_ms,
                                                 uint16_t release_ms)
 {
+    // The DSP rejects parameter writes while Noise Suppressor is disabled.
+    // An OFF operation must therefore remain the known-good single command.
+    if (!enable) return dsp_model_set_noise_suppressor(false);
+
     const uint16_t values[] = {
-        enable ? 1U : 0U,
+        1U,
         (uint16_t)threshold_raw,
         ratio,
         attack_ms,

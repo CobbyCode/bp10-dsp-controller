@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.7 - 2026-07-18
+
+- Apply complete stored Noise Suppressor, Virtual Bass, PreEQ, and DRC states
+  when restoring a DSP profile, while continuing independent module writes and
+  returning the first error.
+- Preserve safe disabled-state handling for Noise Suppressor and Virtual Bass so
+  the DSP receives only the supported disable command without parameter writes.
+- Update Noise Suppressor and Virtual Bass decoder length validation to their
+  exact payload sizes and add boundary coverage for truncated payloads.
+- Keep the cached current profile unchanged when any profile write fails.
+- Correct the extended-readback command comment and remove the obsolete profile
+  name test.
+
 ## 0.3.6 - 2026-07-18
 
 - Correct Virtual Bass enable/disable command ordering and readback validation.

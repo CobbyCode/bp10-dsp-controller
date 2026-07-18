@@ -45,7 +45,7 @@ extern "C" {
 #define MVS_CMD_READBACK             0x05
 #define MVS_CMD_READBACK_FULL        0x0B
 #define MVS_CMD_WRITE_FULL_STATE     0x6B
-#define MVS_CMD_READBACK_EXTENDED    0x09  <!-- DRC extended readback -->
+#define MVS_CMD_READBACK_EXTENDED    0x09  /* DRC extended readback */
 #define MVS_CMD_READBACK_DOUBLE      0x09
 
 // Selectors for individual parameter writes

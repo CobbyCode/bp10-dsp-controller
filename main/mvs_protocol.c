@@ -173,7 +173,7 @@ esp_err_t mvs_decode_noise_suppressor(const uint8_t *data, uint16_t length,
 {
     // Format: <ena> <thresh_s16> <ratio> <attack> <release>
     // Erwartet Daten ab dem 0xFF-Byte (nach Header)
-    if (length < 11) return ESP_ERR_INVALID_SIZE;
+    if (length < 10) return ESP_ERR_INVALID_SIZE;
 
     if (enabled)    *enabled     = read_u16_le(data + 0) != 0;
     if (threshold_dB) *threshold_dB = read_s16_le(data + 2);
@@ -190,7 +190,7 @@ esp_err_t mvs_decode_virtual_bass(const uint8_t *data, uint16_t length,
                                   bool *bass_enhanced)
 {
     // Format: <ena> <cutoff> <intensity> <bass_enhanced>
-    if (length < 9) return ESP_ERR_INVALID_SIZE;
+    if (length < 8) return ESP_ERR_INVALID_SIZE;
 
     if (enabled)         *enabled          = read_u16_le(data + 0) != 0;
     if (cutoff_hz)       *cutoff_hz        = read_u16_le(data + 2);

@@ -10,13 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "unity.h"
+#include "unity_test_runner.h"
 #include "mock_usb_transport.h"
-
-// ---------------------------------------------------------------------------
-// Test-Gruppen (deklariert in test_*.c)
-// ---------------------------------------------------------------------------
-extern void test_protocol_main(void);
-extern void test_dsp_model_main(void);
 
 // ---------------------------------------------------------------------------
 // Setup/Teardown
@@ -38,13 +33,5 @@ void tearDown(void)
 
 void app_main(void)
 {
-    UNITY_BEGIN();
-
-    // Protokoll-Tests
-    test_protocol_main();
-
-    // DSP-Modell-Tests
-    test_dsp_model_main();
-
-    UNITY_END();
+    unity_run_menu();
 }

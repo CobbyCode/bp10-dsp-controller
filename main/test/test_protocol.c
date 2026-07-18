@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "unity.h"
+#include "unity_test_runner.h"
 #include "mvs_protocol.h"
 #include "mock_usb_transport.h"
 
@@ -118,6 +119,11 @@ TEST_CASE("Noise Suppressor decode", "[protocol]")
     TEST_ASSERT_EQUAL(4, ratio);
     TEST_ASSERT_EQUAL(2, attack);
     TEST_ASSERT_EQUAL(100, release);
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_SIZE,
+                      mvs_decode_noise_suppressor(data, sizeof(data) - 1,
+                                                  &enabled, &threshold,
+                                                  &ratio, &attack, &release));
 }
 
 TEST_CASE("Virtual Bass decode", "[protocol]")
@@ -137,6 +143,11 @@ TEST_CASE("Virtual Bass decode", "[protocol]")
     TEST_ASSERT_EQUAL(42, cutoff);
     TEST_ASSERT_EQUAL(4, intensity);
     TEST_ASSERT_TRUE(enhanced);
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_SIZE,
+                      mvs_decode_virtual_bass(data, sizeof(data) - 1,
+                                              &enabled, &cutoff,
+                                              &intensity, &enhanced));
 }
 
 TEST_CASE("PreEQ state size", "[protocol]")
@@ -206,22 +217,4 @@ TEST_CASE("Tag frame building", "[protocol]")
     TEST_ASSERT_EQUAL_HEX8('i', buf[7]);
     TEST_ASSERT_EQUAL_HEX8('c', buf[8]);
     TEST_ASSERT_EQUAL_HEX8(0x16, buf[9]);
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-void test_protocol_main(void)
-{
-    RUN_TEST("Query frame building", "[protocol]");
-    RUN_TEST("Write frame building", "[protocol]");
-    RUN_TEST("Virtual Bass write frames", "[protocol]");
-    RUN_TEST("Noise Suppressor decode", "[protocol]");
-    RUN_TEST("Virtual Bass decode", "[protocol]");
-    RUN_TEST("PreEQ state size", "[protocol]");
-    RUN_TEST("DRC packed state size", "[protocol]");
-    RUN_TEST("DRC full frame includes terminator", "[protocol]");
-    RUN_TEST("Frame validation", "[protocol]");
-    RUN_TEST("Tag frame building", "[protocol]");
 }

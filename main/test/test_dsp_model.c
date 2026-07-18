@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "unity.h"
+#include "unity_test_runner.h"
 #include "dsp_model.h"
 #include "mvs_protocol.h"
 #include "mock_usb_transport.h"
@@ -81,13 +82,6 @@ TEST_CASE("PreEQ filter types", "[dsp_model]")
     TEST_ASSERT_EQUAL(MVS_FILTER_PK, profile.preeq.filters[4].type);  // F4: PK
 }
 
-TEST_CASE("Profile name", "[dsp_model]")
-{
-    dsp_profile_t profile;
-    dsp_model_get_default_profile(&profile);
-    TEST_ASSERT_EQUAL_STRING("default", profile.profile_name);
-}
-
 // ---------------------------------------------------------------------------
 // Minimal known-good commands validation
 // ---------------------------------------------------------------------------
@@ -116,17 +110,4 @@ TEST_CASE("Minimal known-good commands", "[dsp_model]")
         TEST_ASSERT_EQUAL_MEMORY_MESSAGE(expected[i], frame, 8,
                                          "Known-good command mismatch");
     }
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-void test_dsp_model_main(void)
-{
-    RUN_TEST("Default profile values", "[dsp_model]");
-    RUN_TEST("DRC factory defaults", "[dsp_model]");
-    RUN_TEST("PreEQ filter types", "[dsp_model]");
-    RUN_TEST("Profile name", "[dsp_model]");
-    RUN_TEST("Minimal known-good commands", "[dsp_model]");
 }

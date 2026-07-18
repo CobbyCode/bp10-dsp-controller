@@ -344,7 +344,9 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
     err = dsp_model_readback(&readback);
     bool confirmed = err == ESP_OK &&
                      readback.noise_suppressor_enabled == requested;
-    if (confirmed && full_state) {
+    // OFF intentionally writes only the block-enable selector. Parameter
+    // writes are rejected by this DSP while the block is disabled.
+    if (confirmed && full_state && requested) {
         confirmed = readback.noise_suppressor_threshold_raw == threshold_raw &&
                     readback.noise_suppressor_ratio == requested_ratio &&
                     readback.noise_suppressor_attack_ms == requested_attack &&
