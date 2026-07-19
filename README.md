@@ -19,7 +19,7 @@ Depending on the connected DSP, the controller provides:
 - factory reset
 - firmware updates through the web interface
 
-For the A800X, DSP settings are stored on the ESP32 and reapplied after a
+For the Aiyima A800X, DSP settings are stored on the ESP32 and reapplied after a
 restart or DSP reconnect. They are not written to the DSP's internal flash.
 
 Generic ACP profiles currently support live DSP control. DSP setting storage,
@@ -46,18 +46,14 @@ BP10 DSP Controller runs on ESP32-S3 boards. It has been tested with:
 - a compact ESP32-S3 Mini with 4 MB flash and 2 MB PSRAM
 - an ESP32-S3 development board with 16 MB flash and 8 MB PSRAM
 
-More flash or PSRAM is not a problem. The DSP connection uses the ESP32-S3
-native USB data pins: GPIO 20 for D+ and GPIO 19 for D-. In the tested hardware,
-the DSP board is self-powered; the ESP32 does not supply its 5 V power.
-
 ![BP10 controller hardware installation](docs/images/bp10-hardware-installation.png)
 
 ### DSP devices
 
 - **AIYIMA A800X (`0x8888:0x171E`):** tested fixed profile
 - **Generic MVSilicon ACP (`0x8888:0x1719`):** experimental automatic effect
-  discovery; physical validation on the additional board is still pending
-
+  discovery.
+  
 Only recognized functions are shown in the web interface.
 
 ## Install the prebuilt firmware
