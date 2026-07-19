@@ -14,12 +14,12 @@ Depending on the connected DSP, the controller provides:
 - Music DRC
 - Silence Detector, when supported
 - Wi-Fi setup with network scanning
-- automatic restoration of saved A800X settings after power-on
-- A800X configuration backup and restore
+- automatic restoration of saved Aiyima 800X settings after power-on
+- Aiyima 800X configuration backup and restore
 - factory reset
 - firmware updates through the web interface
 
-For the Aiyima A800X, DSP settings are stored on the ESP32 and reapplied after a
+For the Aiyima 800X, DSP settings are stored on the ESP32 and reapplied after a
 restart or DSP reconnect. They are not written to the DSP's internal flash.
 
 Generic ACP profiles currently support live DSP control. DSP setting storage,
@@ -50,7 +50,7 @@ BP10 DSP Controller runs on ESP32-S3 boards. It has been tested with:
 
 ### DSP devices
 
-- **AIYIMA A800X (`0x8888:0x171E`):** tested fixed profile
+- **AIYIMA 800X (`0x8888:0x171E`):** tested fixed profile
 - **Generic MVSilicon ACP (`0x8888:0x1719`):** experimental automatic effect
   discovery.
   
