@@ -1,0 +1,35 @@
+# ESP-IDF output
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+
+# Generated firmware and maps
+*.bin
+*.elf
+*.map
+*.hex
+*.partitions
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local captures, logs, backups, and credentials
+*.pcap
+*.pcapng
+*.log
+*.bak
+*.orig
+*.zip
+*.pem
+*.key
+*.cert
+.env
+.env.*
+wifi_credentials.h

@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: 2026 CobbyCode
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Kconfig.projbuild — BP10 DSP Controller
+#
+
+menu "BP10 DSP Controller"
+
+    config BP10_USB_VID
+        hex "MVSilicon USB VID"
+        default 0x8888
+        help
+            USB Vendor ID des MVSilicon-Geräts.
+
+    config BP10_USB_PID
+        hex "MVSilicon USB PID"
+        default 0x171E
+        help
+            USB Product ID des MVSilicon-Geräts.
+
+    config BP10_HID_REPORT_SIZE
+        int "HID Report Size (Bytes)"
+        default 256
+        help
+            Größe des HID SET_REPORT in Bytes.
+
+    config BP10_USB_DEVICE_WAIT_MS
+        int "USB Device Wait Time (ms)"
+        default 3000
+        help
+            Wartezeit nach Power-On, bis der DSP gebootet ist.
+
+    config BP10_DIAGNOSTIC_NS_BOOT_TEST
+        bool "Noise-Suppressor-Schalttest beim USB-Connect"
+        default n
+        help
+            Expliziter Diagnosemodus. Schaltet den Noise Suppressor beim
+            Verbinden AUS und wieder EIN. Im normalen Betrieb deaktiviert.
+
+    config BP10_WIFI_SETUP_TIMEOUT_S
+        int "WiFi Setup Window (seconds)"
+        default 180
+        help
+            Zeitfenster für WiFi-Setup nach Power-On (0 = unbegrenzt).
+
+    config BP10_MDNS_DEFAULT_HOSTNAME
+        string "Default mDNS Hostname prefix"
+        default "bp10"
+        help
+            Präfix für den mDNS-Hostnamen. Die MAC-Kurzform wird angehängt.
+
+    config BP10_HTTP_PORT
+        int "HTTP Server Port"
+        default 80
+        help
+            Port des integrierten Webservers.
+
+    config BP10_NVS_NAMESPACE
+        string "NVS Namespace"
+        default "bp10"
+        help
+            NVS-Namespace für alle Einstellungen.
+
+    config BP10_MAX_PROFILES
+        int "Maximum DSP Profile Count"
+        default 8
+        range 1 32
+        help
+            Maximale Anzahl speicherbarer DSP-Profile.
+
+endmenu
