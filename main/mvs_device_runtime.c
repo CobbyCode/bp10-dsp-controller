@@ -119,6 +119,16 @@ static void validate_module(mvs_device_profile_t *profile,
         bool enabled, enhanced; uint16_t cutoff, intensity;
         valid = mvs_decode_virtual_bass(state, state_len, &enabled, &cutoff,
                                         &intensity, &enhanced) == ESP_OK;
+    } else if (valid && module == MVS_MODULE_VIRTUAL_BASS_CLASSIC) {
+        bool enabled, enhanced; uint16_t cutoff, intensity;
+        valid = mvs_decode_virtual_bass(state, state_len, &enabled, &cutoff,
+                                        &intensity, &enhanced) == ESP_OK;
+    } else if (valid && module == MVS_MODULE_PHASE) {
+        bool inverted;
+        valid = mvs_decode_phase(state, state_len, &inverted) == ESP_OK;
+    } else if (valid && module == MVS_MODULE_DELAY_HQ) {
+        bool enabled, hq; uint16_t delay;
+        valid = mvs_decode_delay(state, state_len, &enabled, &delay, &hq) == ESP_OK;
     } else if (valid && module == MVS_MODULE_PREEQ) {
         mvs_preeq_state_t peq;
         valid = mvs_decode_preeq(state, state_len, &peq) == ESP_OK;

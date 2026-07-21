@@ -2,6 +2,9 @@
 
 ## 0.4.0 - 2026-07-19
 
+- Add capability-gated Generic Virtual Bass Classic, Music Phase, and Music
+  Delay/HQ controls with immediate readback, simple UI cards, and backward-safe
+  fingerprint-bound ESP-NVS persistence; fixed A800X mappings remain unchanged.
 - Scope factory defaults to the fixed A800X profile. Generic Factory Reset now
   clears controller persistence and performs read-only discovery/readback when
   no matching fingerprint profile exists; Generic factory-value UI actions are

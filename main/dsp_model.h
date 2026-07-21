@@ -64,6 +64,10 @@ typedef struct {
 
     // USB Out Gain (Phase 2+, optional)
     uint16_t usb_out_gain;
+
+    // Appended for backward-safe Phase-2 persistence.
+    bool    delay_enabled;
+    bool    phase2_extended_valid;
 } dsp_profile_t;
 
 // ---------------------------------------------------------------------------
@@ -178,6 +182,20 @@ esp_err_t dsp_model_set_virtual_bass(bool enable);
 esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
                                             uint16_t intensity_pct,
                                             bool bass_enhanced);
+
+esp_err_t dsp_model_read_virtual_bass_classic(bool *enable, uint16_t *cutoff_hz,
+                                               uint16_t *intensity_pct,
+                                               bool *bass_enhanced);
+esp_err_t dsp_model_set_virtual_bass_classic_state(bool enable,
+                                                    uint16_t cutoff_hz,
+                                                    uint16_t intensity_pct,
+                                                    bool bass_enhanced);
+esp_err_t dsp_model_read_phase(bool *phase_invert);
+esp_err_t dsp_model_set_phase(bool phase_invert);
+esp_err_t dsp_model_read_delay(bool *enable, uint16_t *delay_ms,
+                               bool *hq_enabled);
+esp_err_t dsp_model_set_delay(bool enable, uint16_t delay_ms,
+                              bool hq_enabled);
 
 // ---------------------------------------------------------------------------
 // Silence Detector

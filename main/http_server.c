@@ -67,7 +67,8 @@ httpd_config_t http_server_get_default_config(uint16_t port)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = port;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 24;
+    // 3 static handlers plus the capability-driven API routes.
+    config.max_uri_handlers = 28;
     config.stack_size = 16384;  // 16KB für OTA-Upload (esp_ota_write + Flash-Treiber)
     return config;
 }

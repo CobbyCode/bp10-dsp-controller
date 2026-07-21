@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 #include "nvs.h"
 #include "nvs_settings.h"
 
@@ -36,6 +37,12 @@ static dsp_profile_t sample_profile(unsigned marker)
     p.noise_suppressor_enabled = true;
     p.noise_suppressor_ratio = (uint16_t)marker;
     p.virtual_bass_cutoff_hz = (uint16_t)(80 + marker);
+    p.virtual_bass_classic_enabled = true;
+    p.virtual_bass_classic_cutoff_hz = (uint16_t)(40 + marker);
+    p.phase_invert = (marker & 1U) != 0;
+    p.delay_enabled = true;
+    p.delay_ms = (uint16_t)(10 + marker);
+    p.delay_hq_enabled = true;
     return p;
 }
 
@@ -93,6 +100,18 @@ static void test_factory_reset(void)
     assert(nvs_settings_load_generic_config(&fp,&loaded)==ESP_ERR_NOT_FOUND);
 }
 
+static void test_legacy_profile_prefix_is_safe(void)
+{
+    nvs_erase_all(1);
+    dsp_profile_t old = sample_profile(71), loaded;
+    old.phase2_extended_valid = true; // byte is deliberately outside old blob
+    const size_t old_size = offsetof(dsp_profile_t, delay_enabled);
+    assert(nvs_set_blob(1, "dsp_a800x", &old, old_size) == ESP_OK);
+    assert(nvs_settings_load_a800x_config(&loaded) == ESP_OK);
+    assert(loaded.virtual_bass_cutoff_hz == old.virtual_bass_cutoff_hz);
+    assert(!loaded.delay_enabled && !loaded.phase2_extended_valid);
+}
+
 static void test_restore_gate_has_no_writes_on_mismatch(void)
 {
     dsp_profile_t p=sample_profile(61), loaded;
@@ -113,6 +132,7 @@ int main(void)
     test_legacy_migrates_once();
     test_separation_and_fingerprint_matching();
     test_factory_reset();
+    test_legacy_profile_prefix_is_safe();
     test_restore_gate_has_no_writes_on_mismatch();
     puts("nvs_settings_host_tests: PASS");
     return 0;

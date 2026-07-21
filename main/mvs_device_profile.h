@@ -55,6 +55,7 @@ typedef struct {
     bool available;
     uint8_t effect_id;
     uint16_t effect_type;  // ACP-Katalog-Typ (nur für Generic)
+    uint16_t state_size;   // validierter Readback-State in Bytes
 } mvs_effect_ref_t;
 
 // ---------------------------------------------------------------------------

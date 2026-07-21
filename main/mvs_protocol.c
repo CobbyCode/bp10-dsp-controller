@@ -312,6 +312,31 @@ esp_err_t mvs_decode_virtual_bass(const uint8_t *data, uint16_t length,
     return ESP_OK;
 }
 
+esp_err_t mvs_decode_phase(const uint8_t *data, uint16_t length,
+                           bool *phase_invert)
+{
+    if (!data || (length != 2 && length != 4)) return ESP_ERR_INVALID_SIZE;
+    // Some ACP variants expose only phase; others prefix a block-enable word.
+    if (phase_invert) *phase_invert = read_u16_le(data + (length == 4 ? 2 : 0)) != 0;
+    return ESP_OK;
+}
+
+esp_err_t mvs_decode_delay(const uint8_t *data, uint16_t length,
+                           bool *enabled, uint16_t *delay_ms,
+                           bool *hq_enabled)
+{
+    // Confirmed Generic Classic layout:
+    // <enable> <delay-L-ms> <delay-R-ms> <HQ-enable>
+    if (!data || length != 8) return ESP_ERR_INVALID_SIZE;
+    uint16_t left_ms = read_u16_le(data + 2);
+    uint16_t right_ms = read_u16_le(data + 4);
+    if (left_ms != right_ms) return ESP_ERR_INVALID_STATE;
+    if (enabled) *enabled = read_u16_le(data) != 0;
+    if (delay_ms) *delay_ms = left_ms;
+    if (hq_enabled) *hq_enabled = read_u16_le(data + 6) != 0;
+    return ESP_OK;
+}
+
 // ---------------------------------------------------------------------------
 // Decoder — PreEQ
 // ---------------------------------------------------------------------------

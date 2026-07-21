@@ -104,7 +104,7 @@ bool mvs_device_profile_map_catalog_secondary(mvs_device_profile_t *profile,
     // Phase
     if (strcasecmp(normalized_name, "Music Phase") == 0)
         return set_candidate(&profile->phase, catalog_index, effect_type);
-    // Delay/HQ
+    // Classic exposes one Music Delay state containing delay + HQ enable.
     if (strcasecmp(normalized_name, "Music Delay") == 0 ||
         strcasecmp(normalized_name, "Music Delay HQ") == 0)
         return set_candidate(&profile->delay_hq, catalog_index, effect_type);
@@ -152,7 +152,7 @@ void mvs_device_profile_set_module_validated(mvs_device_profile_t *profile,
             break;
         case MVS_MODULE_DELAY_HQ:
             effect = &profile->delay_hq;
-            valid = valid && (state_size >= 6 && state_size <= 10);
+            valid = valid && state_size == 8;
             break;
         case MVS_MODULE_USB_OUT_GAIN:
             effect = &profile->usb_out_gain;
@@ -167,6 +167,7 @@ void mvs_device_profile_set_module_validated(mvs_device_profile_t *profile,
     }
     if (!effect || effect->effect_id == 0) return;
     effect->available = valid;
+    effect->state_size = valid ? state_size : 0;
 
     // Capability-Flags aktualisieren
     profile->has_virtual_bass_classic = profile->virtual_bass_classic.available;

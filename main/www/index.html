@@ -55,6 +55,34 @@
           <div class="form-actions"><button id="btn-bass-read" class="btn btn-secondary">Load Factory Values</button><button id="btn-bass-apply" class="btn btn-primary">Apply</button><span id="bass-message" class="form-message"></span></div>
         </div>
       </details>
+      <details class="module-card hidden" id="vb-classic-module">
+        <summary><span>Virtual Bass Classic</span><span id="vb-classic-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="vb-classic-enable"><span class="switch"></span></label>
+          <div class="parameter-grid dsp-param-grid">
+            <label class="field"><span>Cutoff (Hz)</span><input type="number" id="vb-classic-cutoff" min="0" max="65535" step="1"></label>
+            <label class="field"><span>Intensity (%)</span><input type="number" id="vb-classic-intensity" min="0" max="65535" step="1"></label>
+          </div>
+          <label class="switch-row"><span><strong>Bass Enhanced</strong></span><input type="checkbox" id="vb-classic-enhanced"><span class="switch"></span></label>
+          <div class="form-actions"><button id="btn-vb-classic-apply" class="btn btn-primary">Apply</button><span id="vb-classic-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card hidden" id="phase-module">
+        <summary><span>Music Phase</span><span id="phase-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Invert phase</strong></span><input type="checkbox" id="phase-invert"><span class="switch"></span></label>
+          <div class="form-actions"><button id="btn-phase-apply" class="btn btn-primary">Apply</button><span id="phase-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card hidden" id="delay-module">
+        <summary><span>Music Delay</span><span id="delay-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="delay-enable"><span class="switch"></span></label>
+          <div class="parameter-grid dsp-param-grid"><label class="field"><span>Delay (ms)</span><input type="number" id="delay-ms" min="0" max="65535" step="1"></label></div>
+          <label class="switch-row"><span><strong>High quality</strong></span><input type="checkbox" id="delay-hq"><span class="switch"></span></label>
+          <div class="form-actions"><button id="btn-delay-apply" class="btn btn-primary">Apply</button><span id="delay-message" class="form-message"></span></div>
+        </div>
+      </details>
       <details class="module-card" id="silence-module">
         <summary><span>Silence Detector</span><span id="silence-state" class="module-state">NOT READ</span></summary>
         <div class="module-editor">

@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_log_buffer.h"
+#include "esp_check.h"
 #include <math.h>
 
 static const char *TAG = "bp10_dsp";
@@ -35,6 +36,32 @@ static esp_err_t send_mvs_command(const uint8_t *frame, uint16_t frame_len)
     uint8_t report[256];
     mvs_prepare_hid_report(frame, frame_len, report);
     return usb_host_ctrl_send_report(report, sizeof(report));
+}
+
+static esp_err_t read_module_state(uint8_t effect_id, uint8_t *state,
+                                   uint16_t state_capacity,
+                                   uint16_t *state_len)
+{
+    if (!effect_id || !state || !state_len) return ESP_ERR_INVALID_ARG;
+    uint8_t frame[5], report[256];
+    uint16_t report_len = 0;
+    ESP_RETURN_ON_ERROR(mvs_build_query_frame(effect_id, frame, sizeof(frame)),
+                        TAG, "query frame");
+    ESP_RETURN_ON_ERROR(send_mvs_command(frame, sizeof(frame)), TAG, "query send");
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_RETURN_ON_ERROR(usb_host_ctrl_get_report(report, &report_len), TAG,
+                        "query read");
+    if (report_len < 6 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 || report[2] != effect_id ||
+        report[3] < 1 || report[4] != 0xFF ||
+        (size_t)report[3] + 5U > report_len ||
+        report[4U + report[3]] != MVS_FRAME_TERMINATOR)
+        return ESP_ERR_INVALID_RESPONSE;
+    uint16_t length = (uint16_t)(report[3] - 1U);
+    if (length > state_capacity) return ESP_ERR_INVALID_SIZE;
+    memcpy(state, report + 5, length);
+    *state_len = length;
+    return ESP_OK;
 }
 
 static void store_drc_view(dsp_profile_t *profile, const dsp_drc_view_t *view)
@@ -304,6 +331,28 @@ esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile)
         ESP_LOGD(TAG, "Silence Detector nicht verfügbar (übersprungen)");
     }
 
+    // Old profiles already contained zeroed Phase-2 placeholders. Never turn
+    // those zeros into DSP writes after an upgrade; only a fully confirmed
+    // extended readback may arm persistence restore.
+    if (profile->phase2_extended_valid &&
+        s_device_profile.virtual_bass_classic.available) {
+        err = dsp_model_set_virtual_bass_classic_state(
+            profile->virtual_bass_classic_enabled,
+            profile->virtual_bass_classic_cutoff_hz,
+            profile->virtual_bass_classic_intensity_pct,
+            profile->virtual_bass_classic_enhanced);
+        if (err != ESP_OK && first_err == ESP_OK) first_err = err;
+    }
+    if (profile->phase2_extended_valid && s_device_profile.phase.available) {
+        err = dsp_model_set_phase(profile->phase_invert);
+        if (err != ESP_OK && first_err == ESP_OK) first_err = err;
+    }
+    if (profile->phase2_extended_valid && s_device_profile.delay_hq.available) {
+        err = dsp_model_set_delay(profile->delay_enabled, profile->delay_ms,
+                                  profile->delay_hq_enabled);
+        if (err != ESP_OK && first_err == ESP_OK) first_err = err;
+    }
+
     // 4. PreEQ (falls verfügbar)
     if (s_device_profile.preeq.available) {
         err = dsp_model_update_preeq(&profile->preeq);
@@ -407,6 +456,33 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
             ESP_LOGW(TAG, "Silence-Readback fehlgeschlagen: %s", esp_err_to_name(err));
         }
     }
+
+    bool extended_present = false;
+    bool extended_ok = true;
+    if (s_device_profile.virtual_bass_classic.available) {
+        extended_present = true;
+        esp_err_t err = dsp_model_read_virtual_bass_classic(
+            &profile->virtual_bass_classic_enabled,
+            &profile->virtual_bass_classic_cutoff_hz,
+            &profile->virtual_bass_classic_intensity_pct,
+            &profile->virtual_bass_classic_enhanced);
+        if (err != ESP_OK) { extended_ok = false; ESP_LOGW(TAG, "VB Classic readback failed: %s",
+                                    esp_err_to_name(err)); }
+    }
+    if (s_device_profile.phase.available) {
+        extended_present = true;
+        esp_err_t err = dsp_model_read_phase(&profile->phase_invert);
+        if (err != ESP_OK) { extended_ok = false; ESP_LOGW(TAG, "Phase readback failed: %s",
+                                    esp_err_to_name(err)); }
+    }
+    if (s_device_profile.delay_hq.available) {
+        extended_present = true;
+        esp_err_t err = dsp_model_read_delay(&profile->delay_enabled, &profile->delay_ms,
+                                             &profile->delay_hq_enabled);
+        if (err != ESP_OK) { extended_ok = false; ESP_LOGW(TAG, "Delay readback failed: %s",
+                                    esp_err_to_name(err)); }
+    }
+    profile->phase2_extended_valid = extended_present && extended_ok;
 
     // PreEQ (vollständiger, validierter Zustand)
     if (s_device_profile.preeq.available) {
@@ -790,6 +866,97 @@ esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
         if (err != ESP_OK) return err;
         err = send_mvs_command(frame, sizeof(frame));
         if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return ESP_OK;
+}
+
+esp_err_t dsp_model_read_virtual_bass_classic(bool *enable, uint16_t *cutoff_hz,
+                                               uint16_t *intensity_pct,
+                                               bool *bass_enhanced)
+{
+    if (!s_device_profile.virtual_bass_classic.available)
+        return ESP_ERR_NOT_SUPPORTED;
+    uint8_t state[10]; uint16_t length = 0;
+    ESP_RETURN_ON_ERROR(read_module_state(
+        s_device_profile.virtual_bass_classic.effect_id, state, sizeof(state),
+        &length), TAG, "VB Classic read");
+    return mvs_decode_virtual_bass(state, length, enable, cutoff_hz,
+                                   intensity_pct, bass_enhanced);
+}
+
+esp_err_t dsp_model_set_virtual_bass_classic_state(bool enable,
+                                                    uint16_t cutoff_hz,
+                                                    uint16_t intensity_pct,
+                                                    bool bass_enhanced)
+{
+    if (!s_device_profile.virtual_bass_classic.available)
+        return ESP_ERR_NOT_SUPPORTED;
+    uint8_t id = s_device_profile.virtual_bass_classic.effect_id;
+    const uint16_t values[] = { enable ? 1U : 0U, cutoff_hz, intensity_pct,
+                                bass_enhanced ? 1U : 0U };
+    size_t count = enable ? 4U : 1U;
+    for (size_t selector = 0; selector < count; selector++) {
+        uint8_t frame[8];
+        ESP_RETURN_ON_ERROR(mvs_build_write_frame(id, (uint8_t)selector,
+                            values[selector], frame, sizeof(frame)), TAG,
+                            "VB Classic frame");
+        ESP_RETURN_ON_ERROR(send_mvs_command(frame, sizeof(frame)), TAG,
+                            "VB Classic send");
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return ESP_OK;
+}
+
+esp_err_t dsp_model_read_phase(bool *phase_invert)
+{
+    if (!phase_invert) return ESP_ERR_INVALID_ARG;
+    if (!s_device_profile.phase.available) return ESP_ERR_NOT_SUPPORTED;
+    uint8_t state[4]; uint16_t length = 0;
+    ESP_RETURN_ON_ERROR(read_module_state(s_device_profile.phase.effect_id,
+                        state, sizeof(state), &length), TAG, "Phase read");
+    return mvs_decode_phase(state, length, phase_invert);
+}
+
+esp_err_t dsp_model_set_phase(bool phase_invert)
+{
+    if (!s_device_profile.phase.available) return ESP_ERR_NOT_SUPPORTED;
+    uint8_t selector = s_device_profile.phase.state_size == 4 ? 1U : 0U;
+    uint8_t frame[8];
+    ESP_RETURN_ON_ERROR(mvs_build_write_frame(s_device_profile.phase.effect_id,
+                        selector, phase_invert ? 1U : 0U, frame, sizeof(frame)),
+                        TAG, "Phase frame");
+    return send_mvs_command(frame, sizeof(frame));
+}
+
+esp_err_t dsp_model_read_delay(bool *enable, uint16_t *delay_ms,
+                               bool *hq_enabled)
+{
+    if (!enable || !delay_ms || !hq_enabled) return ESP_ERR_INVALID_ARG;
+    if (!s_device_profile.delay_hq.available) return ESP_ERR_NOT_SUPPORTED;
+    uint8_t state[10]; uint16_t length = 0;
+    ESP_RETURN_ON_ERROR(read_module_state(s_device_profile.delay_hq.effect_id,
+                        state, sizeof(state), &length), TAG, "Delay read");
+    return mvs_decode_delay(state, length, enable, delay_ms, hq_enabled);
+}
+
+esp_err_t dsp_model_set_delay(bool enable, uint16_t delay_ms,
+                              bool hq_enabled)
+{
+    if (!s_device_profile.delay_hq.available) return ESP_ERR_NOT_SUPPORTED;
+    uint8_t id = s_device_profile.delay_hq.effect_id;
+    // The confirmed Classic module rejects parameter writes while disabled.
+    // Enable temporarily, update both channels and HQ, then leave the block in
+    // the requested final state.
+    const uint16_t values[] = { 1U, delay_ms, delay_ms,
+                                hq_enabled ? 1U : 0U, enable ? 1U : 0U };
+    const uint8_t selectors[] = { 0U, 1U, 2U, 3U, 0U };
+    for (size_t i = 0; i < sizeof(selectors); i++) {
+        uint8_t frame[8];
+        ESP_RETURN_ON_ERROR(mvs_build_write_frame(id, selectors[i], values[i],
+                            frame, sizeof(frame)), TAG, "Delay frame");
+        ESP_RETURN_ON_ERROR(send_mvs_command(frame, sizeof(frame)), TAG,
+                            "Delay send");
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     return ESP_OK;

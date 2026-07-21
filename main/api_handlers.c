@@ -167,6 +167,12 @@ static esp_err_t handler_status_get(httpd_req_t *req)
                           dsp_ok && device_profile->noise_suppressor.available);
     cJSON_AddBoolToObject(caps, "virtual_bass",
                           dsp_ok && device_profile->virtual_bass.available);
+    cJSON_AddBoolToObject(caps, "virtual_bass_classic",
+                          dsp_ok && device_profile->virtual_bass_classic.available);
+    cJSON_AddBoolToObject(caps, "music_phase",
+                          dsp_ok && device_profile->phase.available);
+    cJSON_AddBoolToObject(caps, "music_delay",
+                          dsp_ok && device_profile->delay_hq.available);
     cJSON_AddBoolToObject(caps, "silence_detector",
                           dsp_ok && device_profile->silence_detector.available);
     cJSON_AddBoolToObject(caps, "preeq", dsp_ok && device_profile->preeq.available);
@@ -250,6 +256,7 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
     if (err != ESP_OK) {
         return send_error(req, 500, "DSP readback failed");
     }
+    const mvs_device_profile_t *device_profile = dsp_model_get_device_profile();
 
     cJSON *root = cJSON_CreateObject();
     int64_t readback_ms = esp_timer_get_time() / 1000;
@@ -268,6 +275,26 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "bass_cutoff_hz", profile.virtual_bass_cutoff_hz);
     cJSON_AddNumberToObject(root, "bass_intensity_pct", profile.virtual_bass_intensity_pct);
     cJSON_AddBoolToObject(root, "bass_enhanced", profile.virtual_bass_enhanced);
+    cJSON *vbc = cJSON_AddObjectToObject(root, "virtual_bass_classic");
+    cJSON_AddBoolToObject(vbc, "valid",
+                          device_profile->virtual_bass_classic.available);
+    if (device_profile->virtual_bass_classic.available) {
+        cJSON_AddBoolToObject(vbc, "enabled", profile.virtual_bass_classic_enabled);
+        cJSON_AddNumberToObject(vbc, "cutoff_hz", profile.virtual_bass_classic_cutoff_hz);
+        cJSON_AddNumberToObject(vbc, "intensity_pct", profile.virtual_bass_classic_intensity_pct);
+        cJSON_AddBoolToObject(vbc, "bass_enhanced", profile.virtual_bass_classic_enhanced);
+    }
+    cJSON *phase = cJSON_AddObjectToObject(root, "music_phase");
+    cJSON_AddBoolToObject(phase, "valid", device_profile->phase.available);
+    if (device_profile->phase.available)
+        cJSON_AddBoolToObject(phase, "inverted", profile.phase_invert);
+    cJSON *delay = cJSON_AddObjectToObject(root, "music_delay");
+    cJSON_AddBoolToObject(delay, "valid", device_profile->delay_hq.available);
+    if (device_profile->delay_hq.available) {
+        cJSON_AddBoolToObject(delay, "enabled", profile.delay_enabled);
+        cJSON_AddNumberToObject(delay, "delay_ms", profile.delay_ms);
+        cJSON_AddBoolToObject(delay, "hq_enabled", profile.delay_hq_enabled);
+    }
     bool silence_enabled = false;
     uint16_t silence_amplitude = 0;
     esp_err_t silence_err = dsp_model_read_silence_detector(&silence_enabled,
@@ -324,7 +351,7 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
         cJSON_AddBoolToObject(root, "drc_enabled", drc_view.enabled);
     }
 
-    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    const mvs_device_profile_t *device = device_profile;
     cJSON_AddBoolToObject(root, "dsp_config_saved",
         device->kind == MVS_DEVICE_A800X_FIXED && nvs_settings_has_a800x_config());
 
@@ -504,6 +531,110 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "cutoff_hz", readback.virtual_bass_cutoff_hz);
     cJSON_AddNumberToObject(result, "intensity_pct", readback.virtual_bass_intensity_pct);
     cJSON_AddBoolToObject(result, "bass_enhanced", readback.virtual_bass_enhanced);
+    cJSON_AddBoolToObject(result, "confirmed", true);
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
+    return send_ok(req, result);
+}
+
+static cJSON *receive_small_json(httpd_req_t *req)
+{
+    char buf[256];
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) return NULL;
+    buf[len] = '\0';
+    return cJSON_Parse(buf);
+}
+
+static esp_err_t handler_dsp_vb_classic_post(httpd_req_t *req)
+{
+    if (!g_dsp_connected || !dsp_model_get_device_profile()->virtual_bass_classic.available)
+        return send_error(req, 503, "Virtual Bass Classic unavailable");
+    cJSON *json = receive_small_json(req);
+    if (!json) return send_error(req, 400, "Invalid JSON");
+    cJSON *enable = cJSON_GetObjectItem(json, "enable");
+    cJSON *cutoff = cJSON_GetObjectItem(json, "cutoff_hz");
+    cJSON *intensity = cJSON_GetObjectItem(json, "intensity_pct");
+    cJSON *enhanced = cJSON_GetObjectItem(json, "bass_enhanced");
+    if (!cJSON_IsBool(enable) || !cJSON_IsNumber(cutoff) ||
+        !cJSON_IsNumber(intensity) || !cJSON_IsBool(enhanced) ||
+        cutoff->valuedouble < 0 || cutoff->valuedouble > UINT16_MAX ||
+        intensity->valuedouble < 0 || intensity->valuedouble > UINT16_MAX) {
+        cJSON_Delete(json); return send_error(req, 400, "Invalid VB Classic values");
+    }
+    bool requested = cJSON_IsTrue(enable), requested_enhanced = cJSON_IsTrue(enhanced);
+    uint16_t requested_cutoff = (uint16_t)cutoff->valuedouble;
+    uint16_t requested_intensity = (uint16_t)intensity->valuedouble;
+    cJSON_Delete(json);
+    esp_err_t err = dsp_model_set_virtual_bass_classic_state(
+        requested, requested_cutoff, requested_intensity, requested_enhanced);
+    bool confirmed = false, confirmed_enhanced = false;
+    uint16_t confirmed_cutoff = 0, confirmed_intensity = 0;
+    if (err == ESP_OK) err = dsp_model_read_virtual_bass_classic(
+        &confirmed, &confirmed_cutoff, &confirmed_intensity, &confirmed_enhanced);
+    if (err != ESP_OK || confirmed != requested ||
+        (requested && (confirmed_cutoff != requested_cutoff ||
+         confirmed_intensity != requested_intensity ||
+         confirmed_enhanced != requested_enhanced)))
+        return send_error(req, 500, "VB Classic readback mismatch");
+    auto_save_dsp_config();
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "enabled", confirmed);
+    cJSON_AddNumberToObject(result, "cutoff_hz", confirmed_cutoff);
+    cJSON_AddNumberToObject(result, "intensity_pct", confirmed_intensity);
+    cJSON_AddBoolToObject(result, "bass_enhanced", confirmed_enhanced);
+    cJSON_AddBoolToObject(result, "confirmed", true);
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
+    return send_ok(req, result);
+}
+
+static esp_err_t handler_dsp_phase_post(httpd_req_t *req)
+{
+    if (!g_dsp_connected || !dsp_model_get_device_profile()->phase.available)
+        return send_error(req, 503, "Music Phase unavailable");
+    cJSON *json = receive_small_json(req);
+    if (!json) return send_error(req, 400, "Invalid JSON");
+    cJSON *invert = cJSON_GetObjectItem(json, "invert");
+    if (!cJSON_IsBool(invert)) { cJSON_Delete(json); return send_error(req, 400, "Missing invert"); }
+    bool requested = cJSON_IsTrue(invert); cJSON_Delete(json);
+    esp_err_t err = dsp_model_set_phase(requested);
+    bool confirmed = false;
+    if (err == ESP_OK) err = dsp_model_read_phase(&confirmed);
+    if (err != ESP_OK || confirmed != requested)
+        return send_error(req, 500, "Music Phase readback mismatch");
+    auto_save_dsp_config();
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "inverted", confirmed);
+    cJSON_AddBoolToObject(result, "confirmed", true);
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
+    return send_ok(req, result);
+}
+
+static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
+{
+    if (!g_dsp_connected || !dsp_model_get_device_profile()->delay_hq.available)
+        return send_error(req, 503, "Music Delay unavailable");
+    cJSON *json = receive_small_json(req);
+    if (!json) return send_error(req, 400, "Invalid JSON");
+    cJSON *enable = cJSON_GetObjectItem(json, "enable");
+    cJSON *delay = cJSON_GetObjectItem(json, "delay_ms");
+    cJSON *hq = cJSON_GetObjectItem(json, "hq_enabled");
+    if (!cJSON_IsBool(enable) || !cJSON_IsNumber(delay) || !cJSON_IsBool(hq) ||
+        delay->valuedouble < 0 || delay->valuedouble > UINT16_MAX) {
+        cJSON_Delete(json); return send_error(req, 400, "Invalid Delay values");
+    }
+    bool requested = cJSON_IsTrue(enable), requested_hq = cJSON_IsTrue(hq);
+    uint16_t requested_delay = (uint16_t)delay->valuedouble; cJSON_Delete(json);
+    esp_err_t err = dsp_model_set_delay(requested, requested_delay, requested_hq);
+    bool confirmed = false, confirmed_hq = false; uint16_t confirmed_delay = 0;
+    if (err == ESP_OK) err = dsp_model_read_delay(&confirmed, &confirmed_delay, &confirmed_hq);
+    if (err != ESP_OK || confirmed != requested || confirmed_delay != requested_delay ||
+        confirmed_hq != requested_hq)
+        return send_error(req, 500, "Music Delay readback mismatch");
+    auto_save_dsp_config();
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "enabled", confirmed);
+    cJSON_AddNumberToObject(result, "delay_ms", confirmed_delay);
+    cJSON_AddBoolToObject(result, "hq_enabled", confirmed_hq);
     cJSON_AddBoolToObject(result, "confirmed", true);
     cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
     return send_ok(req, result);
@@ -1279,6 +1410,9 @@ void api_handlers_register(http_server_handle_t server)
         {.uri = "/api/dsp",          .method = HTTP_GET,  .handler = handler_dsp_get,          .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/noise",    .method = HTTP_POST, .handler = handler_dsp_noise_post,   .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/bass",     .method = HTTP_POST, .handler = handler_dsp_bass_post,    .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/dsp/vb-classic", .method = HTTP_POST, .handler = handler_dsp_vb_classic_post, .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/dsp/phase",    .method = HTTP_POST, .handler = handler_dsp_phase_post,   .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/dsp/delay",    .method = HTTP_POST, .handler = handler_dsp_delay_post,   .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/silence",  .method = HTTP_POST, .handler = handler_dsp_silence_post, .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/preeq",    .method = HTTP_POST, .handler = handler_dsp_preeq_post,   .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/drc",      .method = HTTP_POST, .handler = handler_dsp_drc_post,     .user_ctx = NULL, .is_websocket = false},

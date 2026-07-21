@@ -33,12 +33,14 @@ Keep the AIYIMA A800X path protocol-compatible while adding a constrained
 - [x] Fix the Generic defaults leak, verify the NVarcher Factory Reset as a
   zero-write readback, retain the unchanged A800X frame/default regression, and
   pass host tests plus the ESP32-S3 Mini build.
+- [x] Add capability-driven Phase and Delay/HQ controls with dynamic Generic
+  IDs, ESP-NVS persistence, UI cards, short host/build regression, and live
+  NVarcher write/readback. Keep unavailable VB Classic hidden and unwritten.
 
 ## Current step
 
-Generic-defaults fix complete locally. Resume Phase 2 only after explicit
-direction. The additional installed-controller A800X OTA hardware test is
-deferred; do not push, tag, or release.
+Phase 2 implementation and verification are complete. Preserve the local
+commit without push; the next step requires Paul's direction.
 
 ## Baseline
 

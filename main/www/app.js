@@ -139,6 +139,9 @@
         updateFactoryValueActions();
         toggleModule('noise-module', activeCapabilities.noise_suppressor);
         toggleModule('bass-module', activeCapabilities.virtual_bass);
+        toggleModule('vb-classic-module', activeCapabilities.virtual_bass_classic);
+        toggleModule('phase-module', activeCapabilities.music_phase);
+        toggleModule('delay-module', activeCapabilities.music_delay);
         toggleModule('silence-module', activeCapabilities.silence_detector);
         toggleModule('preeq-module', activeCapabilities.preeq);
         toggleModule('drc-module', activeCapabilities.drc);
@@ -383,6 +386,12 @@
       }
       if (data.drc && data.drc.valid === true) setDrcForm(data.drc);
       else resetDrcUnread();
+      if (data.virtual_bass_classic && data.virtual_bass_classic.valid)
+        setVbClassicForm(data.virtual_bass_classic);
+      if (data.music_phase && data.music_phase.valid)
+        setPhaseForm(data.music_phase);
+      if (data.music_delay && data.music_delay.valid)
+        setDelayForm(data.music_delay);
     } catch (e) {
       console.error('DSP state update failed:', e);
     }
@@ -397,6 +406,55 @@
     bassState.className = 'module-state ' + (data.virtual_bass ? 'is-on' : '');
     bassEditor.classList.remove('is-dirty');
   }
+
+  function setVbClassicForm(data) {
+    $('vb-classic-enable').checked = data.enabled === true;
+    $('vb-classic-cutoff').value = data.cutoff_hz;
+    $('vb-classic-intensity').value = data.intensity_pct;
+    $('vb-classic-enhanced').checked = data.bass_enhanced === true;
+    $('vb-classic-state').textContent = (data.enabled ? 'ON' : 'OFF') + ' · CONFIRMED';
+    $('vb-classic-state').className = 'module-state ' + (data.enabled ? 'is-on' : '');
+  }
+  $('btn-vb-classic-apply').addEventListener('click', async () => {
+    const result = await api('POST', '/dsp/vb-classic', {
+      enable: $('vb-classic-enable').checked,
+      cutoff_hz: Number($('vb-classic-cutoff').value),
+      intensity_pct: Number($('vb-classic-intensity').value),
+      bass_enhanced: $('vb-classic-enhanced').checked
+    });
+    if (result.status === 'ok' && result.data && result.data.confirmed) {
+      setVbClassicForm(result.data); $('vb-classic-message').textContent = 'Confirmed by readback';
+    } else $('vb-classic-message').textContent = result.error || 'Readback mismatch';
+  });
+
+  function setPhaseForm(data) {
+    $('phase-invert').checked = data.inverted === true;
+    $('phase-state').textContent = (data.inverted ? 'INVERTED' : 'NORMAL') + ' · CONFIRMED';
+    $('phase-state').className = 'module-state ' + (data.inverted ? 'is-on' : '');
+  }
+  $('btn-phase-apply').addEventListener('click', async () => {
+    const result = await api('POST', '/dsp/phase', { invert: $('phase-invert').checked });
+    if (result.status === 'ok' && result.data && result.data.confirmed) {
+      setPhaseForm(result.data); $('phase-message').textContent = 'Confirmed by readback';
+    } else $('phase-message').textContent = result.error || 'Readback mismatch';
+  });
+
+  function setDelayForm(data) {
+    $('delay-enable').checked = data.enabled === true;
+    $('delay-ms').value = data.delay_ms;
+    $('delay-hq').checked = data.hq_enabled === true;
+    $('delay-state').textContent = (data.enabled ? 'ON' : 'OFF') + ' · CONFIRMED';
+    $('delay-state').className = 'module-state ' + (data.enabled ? 'is-on' : '');
+  }
+  $('btn-delay-apply').addEventListener('click', async () => {
+    const result = await api('POST', '/dsp/delay', {
+      enable: $('delay-enable').checked,
+      delay_ms: Number($('delay-ms').value), hq_enabled: $('delay-hq').checked
+    });
+    if (result.status === 'ok' && result.data && result.data.confirmed) {
+      setDelayForm(result.data); $('delay-message').textContent = 'Confirmed by readback';
+    } else $('delay-message').textContent = result.error || 'Readback mismatch';
+  });
 
   ['virtual-bass', 'bass-cutoff', 'bass-intensity', 'bass-enhanced']
     .forEach(id => $(id).addEventListener('input', () => {

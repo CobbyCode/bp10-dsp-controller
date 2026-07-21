@@ -7,6 +7,7 @@
 #include "nvs_settings.h"
 #include "app_config.h"
 #include <string.h>
+#include <stddef.h>
 #include "esp_log.h"
 #include "nvs.h"
 #include "esp_check.h"
@@ -16,6 +17,20 @@ static const char *TAG = "bp10_nvs";
 // NVS-Handle (global, lazy initialized)
 static nvs_handle_t s_nvs_handle = 0;
 static bool s_nvs_opened = false;
+
+// Profiles up to 55ea822 end immediately before delay_enabled. New fields are
+// appended only, so zero-fill + prefix copy safely loads those existing blobs.
+#define DSP_PROFILE_LEGACY_SIZE offsetof(dsp_profile_t, delay_enabled)
+
+static esp_err_t load_profile_blob(const char *key, dsp_profile_t *config)
+{
+    memset(config, 0, sizeof(*config));
+    size_t len = sizeof(*config);
+    esp_err_t err = nvs_get_blob(s_nvs_handle, key, config, &len);
+    if (err != ESP_OK) return err;
+    return (len >= DSP_PROFILE_LEGACY_SIZE && len <= sizeof(*config))
+        ? ESP_OK : ESP_ERR_INVALID_SIZE;
+}
 
 // NVS-Keys
 #define NVS_KEY_WIFI_SSID       "wifi_ssid"
@@ -165,11 +180,8 @@ esp_err_t nvs_settings_load_dsp_config(dsp_profile_t *config)
     if (!config) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
 
-    memset(config, 0, sizeof(*config));
-    size_t len = sizeof(dsp_profile_t);
-    esp_err_t err = nvs_get_blob(s_nvs_handle, NVS_KEY_DSP_CONFIG,
-                                 config, &len);
-    if (err == ESP_OK && len == sizeof(dsp_profile_t)) {
+    esp_err_t err = load_profile_blob(NVS_KEY_DSP_CONFIG, config);
+    if (err == ESP_OK) {
         ESP_LOGI(TAG, "DSP-Konfiguration aus NVS geladen");
     }
     return err;
@@ -194,7 +206,7 @@ bool nvs_settings_has_dsp_config(void)
     memset(&config, 0, sizeof(config));
     size_t len = sizeof(config);
     return nvs_get_blob(s_nvs_handle, NVS_KEY_DSP_CONFIG, &config, &len) == ESP_OK
-           && len == sizeof(dsp_profile_t);
+           && len >= DSP_PROFILE_LEGACY_SIZE && len <= sizeof(dsp_profile_t);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,11 +254,8 @@ esp_err_t nvs_settings_load_a800x_config(dsp_profile_t *config)
     if (!config) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(open_nvs(), TAG, "nvs open");
 
-    memset(config, 0, sizeof(*config));
-    size_t len = sizeof(dsp_profile_t);
-    esp_err_t err = nvs_get_blob(s_nvs_handle, NVS_KEY_DSP_A800X,
-                                 config, &len);
-    if (err == ESP_OK && len == sizeof(dsp_profile_t)) {
+    esp_err_t err = load_profile_blob(NVS_KEY_DSP_A800X, config);
+    if (err == ESP_OK) {
         ESP_LOGI(TAG, "A800X-Konfiguration aus NVS geladen");
     }
     return err;
@@ -260,7 +269,7 @@ bool nvs_settings_has_a800x_config(void)
     memset(&config, 0, sizeof(config));
     size_t len = sizeof(config);
     return nvs_get_blob(s_nvs_handle, NVS_KEY_DSP_A800X, &config, &len) == ESP_OK
-           && len == sizeof(dsp_profile_t);
+           && len >= DSP_PROFILE_LEGACY_SIZE && len <= sizeof(dsp_profile_t);
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +318,9 @@ esp_err_t nvs_settings_load_generic_config(
     memset(&blob, 0, sizeof(blob));
     size_t len = sizeof(blob);
     esp_err_t err = nvs_get_blob(s_nvs_handle, nvs_key, &blob, &len);
-    if (err != ESP_OK || len != sizeof(blob)) {
+    const size_t legacy_blob_size = sizeof(mvs_schema_fingerprint_t) +
+                                    DSP_PROFILE_LEGACY_SIZE;
+    if (err != ESP_OK || len < legacy_blob_size || len > sizeof(blob)) {
         ESP_LOGD(TAG, "Generic-Konfiguration nicht gefunden (Key: %s)", nvs_key);
         return err == ESP_OK ? ESP_ERR_INVALID_SIZE : err;
     }
@@ -338,7 +349,8 @@ bool nvs_settings_has_generic_config(const mvs_schema_fingerprint_t *fp)
     memset(&blob, 0, sizeof(blob));
     size_t len = sizeof(blob);
     if (nvs_get_blob(s_nvs_handle, nvs_key, &blob, &len) != ESP_OK ||
-        len != sizeof(blob))
+        len < sizeof(mvs_schema_fingerprint_t) + DSP_PROFILE_LEGACY_SIZE ||
+        len > sizeof(blob))
         return false;
 
     return mvs_fingerprint_equal(&blob.fingerprint, fp);
