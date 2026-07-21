@@ -91,6 +91,22 @@ esp_err_t dsp_model_init(void);
 void dsp_model_set_device_profile(const mvs_device_profile_t *profile);
 
 /**
+ * @brief Aktuelles Profil in eine lokale Kopie übernehmen.
+ *
+ * Kopiert s_current_profile atomar in den Caller-eigenen Puffer.
+ * Single-Module-Handler arbeiten ausschließlich auf dieser Kopie.
+ */
+void dsp_model_get_profile(dsp_profile_t *out);
+
+/**
+ * @brief Lokale Profilkopie atomar als s_current_profile übernehmen.
+ *
+ * Wird NUR nach erfolgreicher DSP-Schreiben+Verifikation aufgerufen.
+ * Kein globaler Readback, kein Seiteneffekt auf andere Module.
+ */
+void dsp_model_commit_profile(const dsp_profile_t *profile);
+
+/**
  * @return Aktuelle Effekt-ID für einen Effekt aus dem Profil, 0 wenn nicht verfügbar.
  */
 uint8_t dsp_model_get_effect_id_ns(void);
@@ -177,16 +193,22 @@ esp_err_t dsp_model_set_noise_suppressor_state(bool enable,
 // Virtual Bass
 // ---------------------------------------------------------------------------
 
+esp_err_t dsp_model_read_noise_suppressor(bool *enabled, int16_t *threshold_raw,
+                                           uint16_t *ratio, uint16_t *attack_ms,
+                                           uint16_t *release_ms);
 esp_err_t dsp_model_set_virtual_bass(bool enable);
 esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
                                             uint16_t intensity_pct,
                                             bool bass_enhanced);
+esp_err_t dsp_model_read_virtual_bass(bool *enabled, uint16_t *cutoff_hz,
+                                       uint16_t *intensity_pct, bool *enhanced);
 
 esp_err_t dsp_model_read_virtual_bass_classic(bool *enable, uint16_t *cutoff_hz,
                                                uint16_t *intensity_pct);
 esp_err_t dsp_model_set_virtual_bass_classic_state(bool enable,
                                                     uint16_t cutoff_hz,
                                                     uint16_t intensity_pct);
+
 esp_err_t dsp_model_read_phase(bool *phase_invert);
 esp_err_t dsp_model_set_phase(bool phase_invert);
 esp_err_t dsp_model_read_delay(bool *enable, uint16_t *delay_ms,
@@ -213,6 +235,26 @@ esp_err_t dsp_model_update_preeq(const mvs_preeq_state_t *state);
 
 esp_err_t dsp_model_set_drc_enable(bool enable);
 esp_err_t dsp_model_update_drc(const mvs_drc_packed_state_t *state);
+
+/**
+ * @brief Bestätigte DRC-View in ein Profil übertragen.
+ *
+ * Wird nach erfolgreichem dsp_model_update_drc_view() aufgerufen,
+ * um die confirmed-Felder in next_profile zu übernehmen.
+ */
+void dsp_model_profile_apply_drc_view(dsp_profile_t *profile,
+                                       const dsp_drc_view_t *view);
+
+/**
+ * @brief Vollständige Profil-Verifikation mit targeted Reads.
+ *
+ * Prüft alle DSP-Module gegen expected. Bei deaktivierten
+ * Noise/VB/VB Classic wird nur Enable verglichen.
+ * Verwendet NUR targeted Reads, keinen globalen Readback.
+ *
+ * @return ESP_OK wenn alle Module übereinstimmen.
+ */
+esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected);
 
 // ---------------------------------------------------------------------------
 // Globaler DSP-Status (definiert in main.c)

@@ -103,34 +103,84 @@ static esp_err_t send_ok(httpd_req_t *req, cJSON *extra)
 }
 
 /**
- * @brief Vollständige DSP-Konfiguration vom Gerät lesen und im NVS speichern.
+ * @brief Gemeinsamer Commit- und Persist-Abschluss.
  *
- * Wird nach jedem erfolgreichen Apply+Readback aufgerufen, damit die
- * Konfiguration beim nächsten Boot/DSP-Reconnect automatisch angewendet wird.
+ * Aufgerufen NUR nach bereits erfolgreichem DSP-Write und Readback.
+ *
+ * Ablauf:
+ *  1. next als Runtime-Profil committen, damit ESP-Profil und der bereits
+ *     bestätigte DSP-Zustand übereinstimmen.
+ *  2. EXAKT dieselbe next-Kopie über das bestehende A800X-/Generic-Routing
+ *     ins NVS speichern (nicht erneut aus dem globalen Zustand zusammensetzen).
+ *  3. NVS-Rückgabewert zwingend prüfen.
+ *
+ * Bei NVS-Fehler: kein künstlicher DSP- oder RAM-Rollback. Das Runtime-Profil
+ * soll weiter zum bereits bestätigten DSP-Zustand passen; nur der persistente
+ * Save ist fehlgeschlagen. Aufrufer müssen dies melden (kein falsches saved:true).
+ *
+ * @param next  Profil, das committet und persistiert werden soll.
+ * @return ESP_OK bei erfolgreichem Commit + NVS-Save.
+ *         Sonst: Fehlercode aus dem NVS-Routing. In allen Fehlerfällen ist
+ *         next bereits committet.
  */
-static void auto_save_dsp_config(void)
+static esp_err_t commit_and_persist_profile(const dsp_profile_t *next)
 {
-    const mvs_device_profile_t *device = dsp_model_get_device_profile();
-    if (!g_dsp_connected || !device->valid) return;
+    if (!next) return ESP_ERR_INVALID_ARG;
 
-    dsp_profile_t config;
-    esp_err_t err = dsp_model_readback(&config);
-    if (err == ESP_OK) {
-        if (device->kind == MVS_DEVICE_A800X_FIXED) {
-            err = nvs_settings_save_a800x_config(&config);
-        } else if (device->kind == MVS_DEVICE_GENERIC_ACP &&
-                   device->fingerprint_valid) {
-            err = nvs_settings_save_generic_config(
-                &device->schema_fingerprint, &config);
-        } else {
-            return;
-        }
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "DSP-Konfiguration auto-gespeichert");
-        }
-    } else {
-        ESP_LOGW(TAG, "Auto-Save: Readback fehlgeschlagen (%s)", esp_err_to_name(err));
+    // 1. next als Runtime-Profil committen
+    dsp_model_commit_profile(next);
+
+    // 2. EXAKT dieselbe next-Kopie ins NVS speichern (nicht aus globalem Zustand)
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (!g_dsp_connected || !device->valid) return ESP_ERR_INVALID_STATE;
+
+    if (device->kind == MVS_DEVICE_A800X_FIXED) {
+        return nvs_settings_save_a800x_config(next);
+    } else if (device->kind == MVS_DEVICE_GENERIC_ACP
+               && device->fingerprint_valid) {
+        return nvs_settings_save_generic_config(
+            &device->schema_fingerprint, next);
     }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+/**
+ * @brief API-Antwort mit ehrlichem saved-Flag und HTTP-Status passend zum
+ *        Persistenzergebnis.
+ *
+ * - save_err == ESP_OK: HTTP 200, data.saved = true  (normale Erfolgsantwort)
+ * - save_err != ESP_OK: HTTP 500, data.saved = false, error mit DSP-Apply-
+ *                       Bestätigung und NVS-Fehlerursache. Kein falsches
+ *                       saved:true. Runtime-Profil bleibt committet, damit
+ *                       es zum bereits bestätigten DSP-Zustand passt.
+ *
+ * @param req       HTTP-Request
+ * @param data      data-Objekt (Eigentum geht mit Aufruf an den Helper über)
+ * @param save_err  Rückgabewert von commit_and_persist_profile()
+ */
+static esp_err_t send_dsp_response(httpd_req_t *req, cJSON *data,
+                                    esp_err_t save_err)
+{
+    if (save_err == ESP_OK) {
+        cJSON_AddBoolToObject(data, "saved", true);
+        return send_ok(req, data);
+    }
+    // Persistenz fehlgeschlagen: ausdrücklich melden, kein falsches saved:true
+    cJSON_AddBoolToObject(data, "saved", false);
+    char err_msg[96];
+    snprintf(err_msg, sizeof(err_msg),
+             "DSP applied but persistence failed: %s",
+             esp_err_to_name(save_err));
+    ESP_LOGE(TAG, "%s", err_msg);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", "error");
+    cJSON_AddItemToObject(root, "data", data);
+    cJSON_AddStringToObject(root, "error", err_msg);
+    char *json = cJSON_PrintUnformatted(root);
+    esp_err_t resp = send_json_response(req, 500, json);
+    free(json);
+    cJSON_Delete(root);
+    return resp;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +285,7 @@ static esp_err_t handler_status_get(httpd_req_t *req)
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/dsp – kompletter DSP-Zustand (Readback aller Module)
+// GET /api/dsp — committed ESP-Profil (kein DSP-Readback)
 // ---------------------------------------------------------------------------
 
 static esp_err_t handler_dsp_get(httpd_req_t *req)
@@ -252,10 +302,7 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
     }
 
     dsp_profile_t profile;
-    esp_err_t err = dsp_model_readback(&profile);
-    if (err != ESP_OK) {
-        return send_error(req, 500, "DSP readback failed");
-    }
+    dsp_model_get_profile(&profile);
     const mvs_device_profile_t *device_profile = dsp_model_get_device_profile();
 
     cJSON *root = cJSON_CreateObject();
@@ -391,7 +438,6 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
     }
 
     bool requested = cJSON_IsTrue(enable);
-    esp_err_t err;
     bool full_state = cJSON_IsNumber(threshold) || cJSON_IsNumber(ratio) ||
                       cJSON_IsNumber(attack) || cJSON_IsNumber(release);
     int16_t threshold_raw = 0;
@@ -411,48 +457,61 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
         requested_ratio = (uint16_t)ratio->valuedouble;
         requested_attack = (uint16_t)attack->valuedouble;
         requested_release = (uint16_t)release->valuedouble;
-        err = dsp_model_set_noise_suppressor_state(requested, threshold_raw,
-                                                   requested_ratio,
-                                                   requested_attack,
-                                                   requested_release);
-    } else {
-        err = dsp_model_set_noise_suppressor(requested);
     }
     cJSON_Delete(json);
 
-    if (err != ESP_OK) {
+    // Build next_profile from current + request values
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    if (full_state) {
+        next.noise_suppressor_threshold_raw = threshold_raw;
+        next.noise_suppressor_ratio = requested_ratio;
+        next.noise_suppressor_attack_ms = requested_attack;
+        next.noise_suppressor_release_ms = requested_release;
+    }
+    next.noise_suppressor_enabled = requested;
+
+    // DSP write: set_state handles OFF internally (enable-only write)
+    esp_err_t err = dsp_model_set_noise_suppressor_state(
+        requested,
+        next.noise_suppressor_threshold_raw,
+        next.noise_suppressor_ratio,
+        next.noise_suppressor_attack_ms,
+        next.noise_suppressor_release_ms);
+    if (err != ESP_OK)
         return send_error(req, 500, "Failed to set Noise Suppressor");
-    }
-    dsp_profile_t readback;
-    err = dsp_model_readback(&readback);
-    bool confirmed = err == ESP_OK &&
-                     readback.noise_suppressor_enabled == requested;
-    // OFF intentionally writes only the block-enable selector. Parameter
-    // writes are rejected by this DSP while the block is disabled.
-    if (confirmed && full_state && requested) {
-        confirmed = readback.noise_suppressor_threshold_raw == threshold_raw &&
-                    readback.noise_suppressor_ratio == requested_ratio &&
-                    readback.noise_suppressor_attack_ms == requested_attack &&
-                    readback.noise_suppressor_release_ms == requested_release;
-    }
-    if (!confirmed) {
+
+    // Targeted verify: only this module
+    bool ns_enabled; int16_t ns_threshold; uint16_t ns_ratio, ns_attack, ns_release;
+    err = dsp_model_read_noise_suppressor(&ns_enabled, &ns_threshold,
+                                           &ns_ratio, &ns_attack, &ns_release);
+    if (err != ESP_OK)
+        return send_error(req, 500, "Noise Suppressor readback failed");
+    if (ns_enabled != requested)
         return send_error(req, 500, "Noise Suppressor readback mismatch");
+    // ON: verify all written fields. OFF: only enable was written.
+    if (requested) {
+        if (ns_threshold != next.noise_suppressor_threshold_raw ||
+            ns_ratio != next.noise_suppressor_ratio ||
+            ns_attack != next.noise_suppressor_attack_ms ||
+            ns_release != next.noise_suppressor_release_ms)
+            return send_error(req, 500, "Noise Suppressor readback mismatch");
     }
-    g_dsp_ns_state = readback.noise_suppressor_enabled;
 
-    // Auto-Save: vollständige Konfiguration im NVS persistieren
-    auto_save_dsp_config();
+    // Commit + persist (gemeinsamer Abschluss)
+    esp_err_t save_err = commit_and_persist_profile(&next);
+    g_dsp_ns_state = next.noise_suppressor_enabled;
 
+    // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
-    cJSON_AddBoolToObject(result, "enabled", readback.noise_suppressor_enabled);
+    cJSON_AddBoolToObject(result, "enabled", next.noise_suppressor_enabled);
     cJSON_AddNumberToObject(result, "threshold_db",
-                            readback.noise_suppressor_threshold_raw / 100.0);
-    cJSON_AddNumberToObject(result, "ratio", readback.noise_suppressor_ratio);
-    cJSON_AddNumberToObject(result, "attack_ms", readback.noise_suppressor_attack_ms);
-    cJSON_AddNumberToObject(result, "release_ms", readback.noise_suppressor_release_ms);
+                            next.noise_suppressor_threshold_raw / 100.0);
+    cJSON_AddNumberToObject(result, "ratio", next.noise_suppressor_ratio);
+    cJSON_AddNumberToObject(result, "attack_ms", next.noise_suppressor_attack_ms);
+    cJSON_AddNumberToObject(result, "release_ms", next.noise_suppressor_release_ms);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +545,6 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
     bool full_state = cJSON_IsNumber(cutoff) || cJSON_IsNumber(intensity) || cJSON_IsBool(enhanced);
     uint16_t requested_cutoff = 0, requested_intensity = 0;
     bool requested_enhanced = false;
-    esp_err_t err;
     if (full_state) {
         if (!cJSON_IsNumber(cutoff) || !cJSON_IsNumber(intensity) || !cJSON_IsBool(enhanced) ||
             cutoff->valuedouble < 0 || cutoff->valuedouble > UINT16_MAX ||
@@ -497,42 +555,54 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
         requested_cutoff = (uint16_t)cutoff->valuedouble;
         requested_intensity = (uint16_t)intensity->valuedouble;
         requested_enhanced = cJSON_IsTrue(enhanced);
-        err = dsp_model_set_virtual_bass_state(requested, requested_cutoff,
-                                               requested_intensity, requested_enhanced);
-    } else {
-        err = dsp_model_set_virtual_bass(requested);
     }
     cJSON_Delete(json);
 
-    if (err != ESP_OK) {
+    // Build next_profile from current + request values
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    if (full_state) {
+        next.virtual_bass_cutoff_hz = requested_cutoff;
+        next.virtual_bass_intensity_pct = requested_intensity;
+        next.virtual_bass_enhanced = requested_enhanced;
+    }
+    next.virtual_bass_enabled = requested;
+
+    // DSP write: set_state handles OFF internally (enable-only write)
+    esp_err_t err = dsp_model_set_virtual_bass_state(
+        requested,
+        next.virtual_bass_cutoff_hz,
+        next.virtual_bass_intensity_pct,
+        next.virtual_bass_enhanced);
+    if (err != ESP_OK)
         return send_error(req, 500, "Failed to set Virtual Bass");
-    }
 
-    dsp_profile_t readback;
-    err = dsp_model_readback(&readback);
-    bool confirmed = err == ESP_OK && readback.virtual_bass_enabled == requested;
-    // An OFF operation intentionally writes only the block-enable selector.
-    // The remaining parameters stay unchanged and must not be compared with
-    // possibly edited/stale form values. ON writes and verifies all fields.
-    if (confirmed && full_state && requested) {
-        confirmed = readback.virtual_bass_cutoff_hz == requested_cutoff &&
-                    readback.virtual_bass_intensity_pct == requested_intensity &&
-                    readback.virtual_bass_enhanced == requested_enhanced;
-    }
-    if (!confirmed) {
+    // Targeted verify: only this module
+    bool vb_enabled; uint16_t vb_cutoff, vb_intensity; bool vb_enhanced;
+    err = dsp_model_read_virtual_bass(&vb_enabled, &vb_cutoff,
+                                       &vb_intensity, &vb_enhanced);
+    if (err != ESP_OK)
+        return send_error(req, 500, "Virtual Bass readback failed");
+    if (vb_enabled != requested)
         return send_error(req, 500, "Virtual Bass readback mismatch");
+    if (requested) {
+        if (vb_cutoff != next.virtual_bass_cutoff_hz ||
+            vb_intensity != next.virtual_bass_intensity_pct ||
+            vb_enhanced != next.virtual_bass_enhanced)
+            return send_error(req, 500, "Virtual Bass readback mismatch");
     }
 
-    auto_save_dsp_config();
+    // Commit + persist (gemeinsamer Abschluss)
+    esp_err_t save_err = commit_and_persist_profile(&next);
 
+    // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
-    cJSON_AddBoolToObject(result, "enabled", readback.virtual_bass_enabled);
-    cJSON_AddNumberToObject(result, "cutoff_hz", readback.virtual_bass_cutoff_hz);
-    cJSON_AddNumberToObject(result, "intensity_pct", readback.virtual_bass_intensity_pct);
-    cJSON_AddBoolToObject(result, "bass_enhanced", readback.virtual_bass_enhanced);
+    cJSON_AddBoolToObject(result, "enabled", next.virtual_bass_enabled);
+    cJSON_AddNumberToObject(result, "cutoff_hz", next.virtual_bass_cutoff_hz);
+    cJSON_AddNumberToObject(result, "intensity_pct", next.virtual_bass_intensity_pct);
+    cJSON_AddBoolToObject(result, "bass_enhanced", next.virtual_bass_enhanced);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 static cJSON *receive_small_json(httpd_req_t *req)
@@ -563,24 +633,37 @@ static esp_err_t handler_dsp_vb_classic_post(httpd_req_t *req)
     uint16_t requested_cutoff = (uint16_t)cutoff->valuedouble;
     uint16_t requested_intensity = (uint16_t)intensity->valuedouble;
     cJSON_Delete(json);
+
+    // Build next_profile from current + request values
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    next.virtual_bass_classic_enabled = requested;
+    next.virtual_bass_classic_cutoff_hz = requested_cutoff;
+    next.virtual_bass_classic_intensity_pct = requested_intensity;
+
+    // DSP write (unchanged: only enable when OFF, all three when ON)
     esp_err_t err = dsp_model_set_virtual_bass_classic_state(
         requested, requested_cutoff, requested_intensity);
     bool confirmed = false;
     uint16_t confirmed_cutoff = 0, confirmed_intensity = 0;
     if (err == ESP_OK) err = dsp_model_read_virtual_bass_classic(
         &confirmed, &confirmed_cutoff, &confirmed_intensity);
-    if (err != ESP_OK || confirmed != requested ||
-        (requested && (confirmed_cutoff != requested_cutoff ||
-         confirmed_intensity != requested_intensity)))
+    if (err != ESP_OK || confirmed != requested)
         return send_error(req, 500, "VB Classic readback mismatch");
-    auto_save_dsp_config();
+    if (requested && (confirmed_cutoff != requested_cutoff ||
+                      confirmed_intensity != requested_intensity))
+        return send_error(req, 500, "VB Classic readback mismatch");
+
+    // Commit + persist (gemeinsamer Abschluss)
+    esp_err_t save_err = commit_and_persist_profile(&next);
+
+    // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
-    cJSON_AddBoolToObject(result, "enabled", confirmed);
-    cJSON_AddNumberToObject(result, "cutoff_hz", confirmed_cutoff);
-    cJSON_AddNumberToObject(result, "intensity_pct", confirmed_intensity);
+    cJSON_AddBoolToObject(result, "enabled", requested);
+    cJSON_AddNumberToObject(result, "cutoff_hz", requested_cutoff);
+    cJSON_AddNumberToObject(result, "intensity_pct", requested_intensity);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 static esp_err_t handler_dsp_phase_post(httpd_req_t *req)
@@ -597,12 +680,16 @@ static esp_err_t handler_dsp_phase_post(httpd_req_t *req)
     if (err == ESP_OK) err = dsp_model_read_phase(&confirmed);
     if (err != ESP_OK || confirmed != requested)
         return send_error(req, 500, "Music Phase readback mismatch");
-    auto_save_dsp_config();
+
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    next.phase_invert = confirmed;
+    esp_err_t save_err = commit_and_persist_profile(&next);
+
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "inverted", confirmed);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
@@ -626,30 +713,70 @@ static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
     if (err != ESP_OK || confirmed != requested || confirmed_delay != requested_delay ||
         confirmed_hq != requested_hq)
         return send_error(req, 500, "Music Delay readback mismatch");
-    auto_save_dsp_config();
+
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    next.delay_enabled = confirmed;
+    next.delay_ms = confirmed_delay;
+    next.delay_hq_enabled = confirmed_hq;
+    esp_err_t save_err = commit_and_persist_profile(&next);
+
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed);
     cJSON_AddNumberToObject(result, "delay_ms", confirmed_delay);
     cJSON_AddBoolToObject(result, "hq_enabled", confirmed_hq);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 // ---------------------------------------------------------------------------
-// Toggle-Handler (Silence, PreEQ-Enable, DRC-Enable) + Auto-Save
+// Toggle-Helper (intern, kein HTTP) und Silence-Handler
 // ---------------------------------------------------------------------------
 
 typedef esp_err_t (*dsp_toggle_fn_t)(bool enable);
 
-static esp_err_t handler_dsp_toggle_confirmed(httpd_req_t *req,
-                                               dsp_toggle_fn_t setter,
-                                               uint8_t effect_id,
-                                               const char *name)
+/**
+ * @brief Interner Toggle-Helper: setter + targeted Read + Confirm.
+ *
+ * Sendet KEINE HTTP-Antwort. Setzt nur *out_confirmed bei Erfolg.
+ *
+ * @param setter         DSP-Schreibroutine (z.B. dsp_model_set_silence_detector)
+ * @param effect_id      Effekt-ID für den gezielten Readback
+ * @param requested      angeforderter Enable-Zustand
+ * @param name           Modulname für Logs / Fehlermeldung
+ * @param[out] out_confirmed  vom DSP bestätigter Zustand
+ * @return ESP_OK bei erfolgreichem Write+Readback+Match, sonst Fehlercode.
+ */
+static esp_err_t apply_toggle_with_readback(dsp_toggle_fn_t setter,
+                                             uint8_t effect_id,
+                                             bool requested,
+                                             const char *name,
+                                             bool *out_confirmed)
 {
-    if (!g_dsp_connected) {
-        return send_error(req, 503, "DSP unavailable");
+    esp_err_t err = setter(requested);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "%s write: %s", name, esp_err_to_name(err));
+        return err;
     }
+    bool confirmed = false;
+    err = dsp_model_read_effect_enabled(effect_id, &confirmed);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "%s readback: %s", name, esp_err_to_name(err));
+        return err;
+    }
+    if (confirmed != requested) {
+        ESP_LOGE(TAG, "%s readback mismatch: req=%d got=%d",
+                 name, requested, confirmed);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    *out_confirmed = confirmed;
+    return ESP_OK;
+}
+
+static esp_err_t handler_dsp_silence_post(httpd_req_t *req)
+{
+    if (!g_dsp_connected)
+        return send_error(req, 503, "DSP unavailable");
 
     char buf[64];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
@@ -666,29 +793,31 @@ static esp_err_t handler_dsp_toggle_confirmed(httpd_req_t *req,
     bool requested = cJSON_IsTrue(enable);
     cJSON_Delete(json);
 
-    esp_err_t err = setter(requested);
-    if (err != ESP_OK) return send_error(req, 500, name);
-
+    // DSP schreiben + targeted Read (kein HTTP, kein zweiter Readback)
     bool confirmed = false;
-    err = dsp_model_read_effect_enabled(effect_id, &confirmed);
-    if (err != ESP_OK || confirmed != requested) {
-        return send_error(req, 500, "DSP readback mismatch");
+    esp_err_t err = apply_toggle_with_readback(
+        dsp_model_set_silence_detector,
+        dsp_model_get_effect_id_sd(),
+        requested,
+        "Silence Detector",
+        &confirmed);
+    if (err != ESP_OK) {
+        // send_error-Rückgabewert ist semantisch der HTTP-Status, NICHT der
+        // DSP-Vorgang. Den DSP-Status haben wir oben bereits geprüft.
+        return send_error(req, 500, "Failed to set Silence Detector");
     }
 
-    auto_save_dsp_config();
+    // next_profile aktualisieren + gemeinsamer commit_and_persist
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    next.silence_detector_enabled = confirmed;
+    esp_err_t save_err = commit_and_persist_profile(&next);
 
+    // Antwort ERST NACH erfolgreichem commit + NVS-Save
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
-}
-
-static esp_err_t handler_dsp_silence_post(httpd_req_t *req)
-{
-    return handler_dsp_toggle_confirmed(req, dsp_model_set_silence_detector,
-                                        dsp_model_get_effect_id_sd(),
-                                        "Failed to set Silence Detector");
+    return send_dsp_response(req, result, save_err);
 }
 
 // ---------------------------------------------------------------------------
@@ -717,10 +846,10 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     free(buf);
     if (!json) return send_error(req, 400, "Invalid JSON");
 
-    dsp_profile_t current;
-    esp_err_t err = dsp_model_readback(&current);
+    // Targeted read: only PreEQ from DSP (no global readback)
+    mvs_preeq_state_t requested;
+    esp_err_t err = dsp_model_read_preeq(&requested);
     if (err != ESP_OK) { cJSON_Delete(json); return send_error(req, 500, "PreEQ readback failed"); }
-    mvs_preeq_state_t requested = current.preeq;
 
     cJSON *enable = cJSON_GetObjectItem(json, "enable");
     cJSON *pregain = cJSON_GetObjectItem(json, "pregain_db");
@@ -761,9 +890,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     err = dsp_model_update_preeq(&requested);
     if (err != ESP_OK) return send_error(req, 500, "Failed to write PreEQ");
 
-    // Gleiche Normalisierung wie in dsp_model_update_preeq anwenden,
-    // damit der memcmp-Vergleich nicht an reparierten korrumpierten
-    // deaktivierten Filtern scheitert.
+    // Normalize for verification (same normalization as dsp_model_update_preeq)
     for (int i = 0; i < 10; i++) {
         mvs_preeq_filter_t *f = &requested.filters[i];
         if (!f->enabled && f->frequency_hz == 0 && f->q_raw == 0) {
@@ -775,20 +902,25 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     }
     mvs_prepare_preeq_for_schema(device_profile->preeq_schema, &requested);
 
-    dsp_profile_t readback;
-    err = dsp_model_readback(&readback);
-    if (err != ESP_OK || memcmp(&requested, &readback.preeq, sizeof(requested)) != 0) {
+    // Targeted verify: only PreEQ, no global readback
+    mvs_preeq_state_t verify;
+    err = dsp_model_read_preeq(&verify);
+    if (err != ESP_OK || memcmp(&requested, &verify, sizeof(requested)) != 0) {
         return send_error(req, 500, "PreEQ readback mismatch");
     }
 
-    auto_save_dsp_config();
+    // Commit PreEQ-Teil ins Profil + gemeinsamer Persist-Abschluss
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    memcpy(&next.preeq, &requested, sizeof(requested));
+    esp_err_t save_err = commit_and_persist_profile(&next);
 
+    // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
-    cJSON_AddBoolToObject(result, "enabled", readback.preeq.block_enabled != 0);
-    cJSON_AddNumberToObject(result, "pregain_db", readback.preeq.pre_gain_raw / 256.0);
+    cJSON_AddBoolToObject(result, "enabled", next.preeq.block_enabled != 0);
+    cJSON_AddNumberToObject(result, "pregain_db", next.preeq.pre_gain_raw / 256.0);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 // ---------------------------------------------------------------------------
@@ -850,7 +982,11 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
                           "DRC is not in supported Full-Band mode; no values were changed");
     if (err != ESP_OK) return send_error(req, 500, "DRC write/readback failed");
 
-    auto_save_dsp_config();
+    // Commit DRC-View ins Profil + gemeinsamer Persist-Abschluss
+    dsp_profile_t next;
+    dsp_model_get_profile(&next);
+    dsp_model_profile_apply_drc_view(&next, &confirmed);
+    esp_err_t save_err = commit_and_persist_profile(&next);
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed.enabled);
@@ -862,8 +998,7 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "attack_ms", confirmed.attack_ms);
     cJSON_AddNumberToObject(result, "release_ms", confirmed.release_ms);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 // ---------------------------------------------------------------------------
@@ -920,22 +1055,20 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
         return send_error(req, 500, "Failed to apply DSP configuration");
     }
 
-    // Readback aller Module bestätigen
-    dsp_profile_t readback;
-    err = dsp_model_readback(&readback);
+    // Targeted verify: alle Module, OFF-Module nur Enable
+    err = dsp_model_verify_full_profile(&profile);
     if (err != ESP_OK) {
-        return send_error(req, 500, "DSP readback failed after apply");
+        return send_error(req, 500, "DSP verification failed after apply");
     }
 
-    // Im NVS speichern
-    nvs_settings_save_a800x_config(&readback);
+    // Commit exakt das angeforderte Profil + gemeinsamer Persist-Abschluss
+    esp_err_t save_err = commit_and_persist_profile(&profile);
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "applied", true);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", true);
     cJSON_AddStringToObject(result, "source", from_body ? "body" : "nvs");
-    return send_ok(req, result);
+    return send_dsp_response(req, result, save_err);
 }
 
 // ---------------------------------------------------------------------------

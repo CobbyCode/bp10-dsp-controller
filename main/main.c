@@ -216,6 +216,7 @@ static void dsp_boot_apply_task(void *arg)
                              esp_err_to_name(apply_err));
                     return;
                 }
+                dsp_model_commit_profile(&saved);
                 vTaskDelay(pdMS_TO_TICKS(200));
                 // Kurzer Readback zur Bestätigung
                 dsp_profile_t rb;
@@ -257,6 +258,7 @@ static void dsp_boot_apply_task(void *arg)
         ESP_LOGE(TAG, "Profil anwenden fehlgeschlagen: %s", esp_err_to_name(err));
         return;
     }
+    dsp_model_commit_profile(&saved);
 
     vTaskDelay(pdMS_TO_TICKS(200));
 
@@ -353,6 +355,13 @@ static void dsp_boot_readonly_task(void *arg)
         ESP_LOGE(TAG, "Readback (readonly) fehlgeschlagen: %s", esp_err_to_name(err));
         return;
     }
+
+    // Bewusste Initialübernahme des DSP-Live-Zustands als Runtime-Profil,
+    // wenn kein gespeichertes Profil angewendet wird. Kein NVS-Save:
+    // der Read-only-Boot spiegelt nur, was das Gerät tatsächlich hat,
+    // damit GET /api/dsp nach erstem Start / Generic Factory Reset den
+    // realen Live-Zustand liefert statt eines leeren Profils.
+    dsp_model_commit_profile(&profile);
 
     g_dsp_ns_state = profile.noise_suppressor_enabled;
     ESP_LOGI(TAG, "DSP-Zustand gelesen (kein Auto-Save): Noise Suppressor=%s, "

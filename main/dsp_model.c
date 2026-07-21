@@ -157,6 +157,20 @@ uint8_t dsp_model_get_effect_id_usb_out_gain(void)
 }
 
 // ---------------------------------------------------------------------------
+// Profil-Helper (Single-Module-Pattern)
+// ---------------------------------------------------------------------------
+
+void dsp_model_get_profile(dsp_profile_t *out)
+{
+    if (out) memcpy(out, &s_current_profile, sizeof(dsp_profile_t));
+}
+
+void dsp_model_commit_profile(const dsp_profile_t *profile)
+{
+    if (profile) memcpy(&s_current_profile, profile, sizeof(dsp_profile_t));
+}
+
+// ---------------------------------------------------------------------------
 // Öffentliche API — Initialisierung
 // ---------------------------------------------------------------------------
 
@@ -386,7 +400,6 @@ esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile)
         return first_err;
     }
 
-    memcpy(&s_current_profile, profile, sizeof(dsp_profile_t));
     ESP_LOGI(TAG, "DSP-Profil angewendet (kein Flash-Save)");
     return ESP_OK;
 }
@@ -505,7 +518,6 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
         }
     }
 
-    memcpy(&s_current_profile, profile, sizeof(dsp_profile_t));
     ESP_LOGI(TAG, "DSP-Readback abgeschlossen");
     return ESP_OK;
 }
@@ -714,6 +726,241 @@ esp_err_t dsp_model_update_drc_view(const dsp_drc_view_t *requested,
         return mvs_drc_classic_to_view(&after, confirmed);
     }
     return ESP_ERR_NOT_SUPPORTED;
+}
+
+// ---------------------------------------------------------------------------
+// Targeted Read: Noise Suppressor
+// ---------------------------------------------------------------------------
+
+esp_err_t dsp_model_read_noise_suppressor(bool *enabled, int16_t *threshold_raw,
+                                           uint16_t *ratio, uint16_t *attack_ms,
+                                           uint16_t *release_ms)
+{
+    if (!enabled || !threshold_raw || !ratio || !attack_ms || !release_ms)
+        return ESP_ERR_INVALID_ARG;
+    if (!s_device_profile.noise_suppressor.available)
+        return ESP_ERR_NOT_SUPPORTED;
+
+    uint8_t ns_id = s_device_profile.noise_suppressor.effect_id;
+    uint8_t frame[16];
+    uint8_t report[256];
+    uint16_t report_len = 0;
+
+    mvs_build_query_frame(ns_id, frame, sizeof(frame));
+    mvs_prepare_hid_report(frame, 5, report);
+    esp_err_t err = usb_host_ctrl_send_report(report, sizeof(report));
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    err = usb_host_ctrl_get_report(report, &report_len);
+    if (err != ESP_OK) return err;
+    if (report_len < 16) return ESP_ERR_INVALID_RESPONSE;
+    return mvs_decode_noise_suppressor(report + 5, report_len - 5,
+                                       enabled, threshold_raw, ratio,
+                                       attack_ms, release_ms);
+}
+
+// ---------------------------------------------------------------------------
+// Targeted Read: Virtual Bass
+// ---------------------------------------------------------------------------
+
+esp_err_t dsp_model_read_virtual_bass(bool *enabled, uint16_t *cutoff_hz,
+                                       uint16_t *intensity_pct, bool *enhanced)
+{
+    if (!enabled || !cutoff_hz || !intensity_pct || !enhanced)
+        return ESP_ERR_INVALID_ARG;
+    if (!s_device_profile.virtual_bass.available)
+        return ESP_ERR_NOT_SUPPORTED;
+
+    uint8_t vb_id = s_device_profile.virtual_bass.effect_id;
+    uint8_t frame[16];
+    uint8_t report[256];
+    uint16_t report_len = 0;
+
+    mvs_build_query_frame(vb_id, frame, sizeof(frame));
+    mvs_prepare_hid_report(frame, 5, report);
+    esp_err_t err = usb_host_ctrl_send_report(report, sizeof(report));
+    if (err != ESP_OK) return err;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    err = usb_host_ctrl_get_report(report, &report_len);
+    if (err != ESP_OK) return err;
+    if (report_len < 10) return ESP_ERR_INVALID_RESPONSE;
+    return mvs_decode_virtual_bass(report + 5, report_len - 5,
+                                   enabled, cutoff_hz, intensity_pct, enhanced);
+}
+
+// ---------------------------------------------------------------------------
+// Profil-Helper: DRC View → Profile
+// ---------------------------------------------------------------------------
+
+void dsp_model_profile_apply_drc_view(dsp_profile_t *profile,
+                                       const dsp_drc_view_t *view)
+{
+    if (!profile || !view) return;
+    memset(&profile->drc, 0, sizeof(profile->drc));
+    profile->drc.enabled = view->enabled ? 1U : 0U;
+    profile->drc.mode = 0;
+    profile->drc.pregains[3] = (uint16_t)lround(
+        4096.0 * pow(10.0, view->pregain_db / 20.0));
+    profile->drc.thresholds[3] = (int16_t)lround(view->threshold_db * 100.0);
+    profile->drc.ratios[3] = (uint16_t)lround(view->ratio * 100.0);
+    profile->drc.attacks[3] = view->attack_ms;
+    profile->drc.releases[3] = view->release_ms;
+}
+
+// ---------------------------------------------------------------------------
+// Full-Profile Verification (targeted reads, kein globaler Readback)
+// ---------------------------------------------------------------------------
+
+esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
+{
+    if (!expected) return ESP_ERR_INVALID_ARG;
+    const mvs_device_profile_t *dev = &s_device_profile;
+
+    // Noise Suppressor
+    if (dev->noise_suppressor.available) {
+        bool en; int16_t thr; uint16_t rat, atk, rel;
+        esp_err_t err = dsp_model_read_noise_suppressor(&en, &thr, &rat, &atk, &rel);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: Noise read failed"); return err; }
+        if (en != expected->noise_suppressor_enabled) {
+            ESP_LOGW(TAG, "verify: Noise enabled mismatch exp=%d got=%d",
+                     expected->noise_suppressor_enabled, en);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (expected->noise_suppressor_enabled) {
+            if (thr != expected->noise_suppressor_threshold_raw ||
+                rat != expected->noise_suppressor_ratio ||
+                atk != expected->noise_suppressor_attack_ms ||
+                rel != expected->noise_suppressor_release_ms) {
+                ESP_LOGW(TAG, "verify: Noise params mismatch");
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+    }
+
+    // Virtual Bass
+    if (dev->virtual_bass.available) {
+        bool en, enh; uint16_t cut, it;
+        esp_err_t err = dsp_model_read_virtual_bass(&en, &cut, &it, &enh);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: VB read failed"); return err; }
+        if (en != expected->virtual_bass_enabled) {
+            ESP_LOGW(TAG, "verify: VB enabled mismatch");
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (expected->virtual_bass_enabled) {
+            if (cut != expected->virtual_bass_cutoff_hz ||
+                it != expected->virtual_bass_intensity_pct ||
+                enh != expected->virtual_bass_enhanced) {
+                ESP_LOGW(TAG, "verify: VB params mismatch");
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+    }
+
+    // Virtual Bass Classic
+    if (dev->virtual_bass_classic.available) {
+        bool en; uint16_t cut, it;
+        esp_err_t err = dsp_model_read_virtual_bass_classic(&en, &cut, &it);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: VBC read failed"); return err; }
+        if (en != expected->virtual_bass_classic_enabled) {
+            ESP_LOGW(TAG, "verify: VBC enabled mismatch");
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (expected->virtual_bass_classic_enabled) {
+            if (cut != expected->virtual_bass_classic_cutoff_hz ||
+                it != expected->virtual_bass_classic_intensity_pct) {
+                ESP_LOGW(TAG, "verify: VBC params mismatch");
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+    }
+
+    // Music Phase
+    if (dev->phase.available) {
+        bool in;
+        esp_err_t err = dsp_model_read_phase(&in);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: Phase read failed"); return err; }
+        if (in != expected->phase_invert) {
+            ESP_LOGW(TAG, "verify: Phase mismatch");
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+
+    // Music Delay
+    if (dev->delay_hq.available) {
+        bool en, hq; uint16_t ms;
+        esp_err_t err = dsp_model_read_delay(&en, &ms, &hq);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: Delay read failed"); return err; }
+        if (en != expected->delay_enabled ||
+            ms != expected->delay_ms ||
+            hq != expected->delay_hq_enabled) {
+            ESP_LOGW(TAG, "verify: Delay mismatch");
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+
+    // Silence Detector
+    if (dev->silence_detector.available) {
+        bool en; uint16_t amp;
+        esp_err_t err = dsp_model_read_silence_detector(&en, &amp);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: Silence read failed"); return err; }
+        if (en != expected->silence_detector_enabled) {
+            ESP_LOGW(TAG, "verify: Silence enabled mismatch");
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+
+    // PreEQ
+    if (dev->preeq.available) {
+        mvs_preeq_state_t state;
+        esp_err_t err = dsp_model_read_preeq(&state);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: PreEQ read failed"); return err; }
+        // Apply same normalization as dsp_model_update_preeq
+        for (int i = 0; i < 10; i++) {
+            mvs_preeq_filter_t *f = &state.filters[i];
+            if (!f->enabled && f->frequency_hz == 0 && f->q_raw == 0) {
+                f->type = MVS_FILTER_PK;
+                f->frequency_hz = 20000;
+                f->q_raw = 724;
+                f->gain_raw = 0;
+            }
+        }
+        mvs_prepare_preeq_for_schema(dev->preeq_schema, &state);
+        if (memcmp(&state, &expected->preeq, sizeof(state)) != 0) {
+            ESP_LOGW(TAG, "verify: PreEQ mismatch");
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+
+    // DRC
+    if (dev->drc.available) {
+        dsp_drc_view_t view;
+        esp_err_t err = dsp_model_read_drc_view(&view);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "verify: DRC read failed"); return err; }
+        if (view.enabled != (expected->drc.enabled != 0)) {
+            ESP_LOGW(TAG, "verify: DRC enabled mismatch");
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (view.enabled) {
+            dsp_drc_view_t exp_view;
+            if (dev->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
+                mvs_drc_a800x_to_view((const mvs_drc_packed_state_t *)&expected->drc, &exp_view);
+            } else {
+                exp_view = view; /* schema mismatch: skip detailed comparison */
+            }
+            if (dev->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH &&
+                (fabs(exp_view.pregain_db - view.pregain_db) > 0.01 ||
+                 fabs(exp_view.threshold_db - view.threshold_db) > 0.02 ||
+                 fabs(exp_view.ratio - view.ratio) > 0.02 ||
+                 exp_view.attack_ms != view.attack_ms ||
+                 exp_view.release_ms != view.release_ms)) {
+                ESP_LOGW(TAG, "verify: DRC params mismatch");
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "Full-Profile verification passed");
+    return ESP_OK;
 }
 
 // ---------------------------------------------------------------------------
