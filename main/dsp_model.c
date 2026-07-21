@@ -37,6 +37,32 @@ static esp_err_t send_mvs_command(const uint8_t *frame, uint16_t frame_len)
     return usb_host_ctrl_send_report(report, sizeof(report));
 }
 
+static void store_drc_view(dsp_profile_t *profile, const dsp_drc_view_t *view)
+{
+    memset(&profile->drc, 0, sizeof(profile->drc));
+    profile->drc.enabled = view->enabled ? 1U : 0U;
+    profile->drc.mode = 0;
+    profile->drc.pregains[3] = (uint16_t)lround(
+        4096.0 * pow(10.0, view->pregain_db / 20.0));
+    profile->drc.thresholds[3] = (int16_t)lround(view->threshold_db * 100.0);
+    profile->drc.ratios[3] = (uint16_t)lround(view->ratio * 100.0);
+    profile->drc.attacks[3] = view->attack_ms;
+    profile->drc.releases[3] = view->release_ms;
+}
+
+static void load_drc_view(const dsp_profile_t *profile, dsp_drc_view_t *view)
+{
+    memset(view, 0, sizeof(*view));
+    view->enabled = profile->drc.enabled != 0;
+    view->full_band_supported = true;
+    view->pregain_db = profile->drc.pregains[3] > 0
+        ? 20.0 * log10(profile->drc.pregains[3] / 4096.0) : 0.0;
+    view->threshold_db = profile->drc.thresholds[3] / 100.0;
+    view->ratio = profile->drc.ratios[3] / 100.0;
+    view->attack_ms = profile->drc.attacks[3];
+    view->release_ms = profile->drc.releases[3];
+}
+
 // ---------------------------------------------------------------------------
 // Öffentliche API — Profil
 // ---------------------------------------------------------------------------
@@ -85,6 +111,22 @@ uint8_t dsp_model_get_effect_id_preeq(void)
 uint8_t dsp_model_get_effect_id_drc(void)
 {
     return mvs_effect_id_drc(&s_device_profile);
+}
+uint8_t dsp_model_get_effect_id_vb_classic(void)
+{
+    return mvs_effect_id_vb_classic(&s_device_profile);
+}
+uint8_t dsp_model_get_effect_id_phase(void)
+{
+    return mvs_effect_id_phase(&s_device_profile);
+}
+uint8_t dsp_model_get_effect_id_delay_hq(void)
+{
+    return mvs_effect_id_delay_hq(&s_device_profile);
+}
+uint8_t dsp_model_get_effect_id_usb_out_gain(void)
+{
+    return mvs_effect_id_usb_out_gain(&s_device_profile);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,9 +307,14 @@ esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile)
     }
 
     // 5. DRC (falls verfügbar)
-    if (s_device_profile.drc.available &&
-        s_device_profile.drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
-        err = dsp_model_update_drc(&profile->drc);
+    if (s_device_profile.drc.available) {
+        if (s_device_profile.drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
+            err = dsp_model_update_drc(&profile->drc);
+        } else {
+            dsp_drc_view_t requested, confirmed;
+            load_drc_view(profile, &requested);
+            err = dsp_model_update_drc_view(&requested, &confirmed);
+        }
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "DRC-State set fehlgeschlagen: %s", esp_err_to_name(err));
             if (first_err == ESP_OK) first_err = err;
@@ -362,7 +409,14 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
 
     // DRC (vollständiger, validierter Zustand)
     if (s_device_profile.drc.available) {
-        esp_err_t err = dsp_model_read_drc(&profile->drc);
+        esp_err_t err;
+        if (s_device_profile.drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
+            err = dsp_model_read_drc(&profile->drc);
+        } else {
+            dsp_drc_view_t view;
+            err = dsp_model_read_drc_view(&view);
+            if (err == ESP_OK) store_drc_view(profile, &view);
+        }
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "DRC-Readback fehlgeschlagen: %s", esp_err_to_name(err));
         }

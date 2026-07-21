@@ -168,7 +168,20 @@ esp_err_t mvs_device_runtime_identify(void)
                         &profile.virtual_bass);
         validate_module(&profile, MVS_MODULE_PREEQ, &profile.preeq);
         validate_module(&profile, MVS_MODULE_DRC, &profile.drc);
+        if (profile.virtual_bass_classic.effect_id != 0)
+            validate_module(&profile, MVS_MODULE_VIRTUAL_BASS_CLASSIC,
+                            &profile.virtual_bass_classic);
+        if (profile.phase.effect_id != 0)
+            validate_module(&profile, MVS_MODULE_PHASE, &profile.phase);
+        if (profile.delay_hq.effect_id != 0)
+            validate_module(&profile, MVS_MODULE_DELAY_HQ, &profile.delay_hq);
+        if (profile.usb_out_gain.effect_id != 0)
+            validate_module(&profile, MVS_MODULE_USB_OUT_GAIN,
+                            &profile.usb_out_gain);
         if (!profile.valid) return ESP_ERR_NOT_SUPPORTED;
+
+        // Schema-Fingerprint berechnen (nur Struktur, keine Adressen)
+        mvs_device_profile_compute_fingerprint(&profile);
     } else {
         return ESP_ERR_NOT_SUPPORTED;
     }

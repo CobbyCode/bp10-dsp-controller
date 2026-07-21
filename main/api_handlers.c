@@ -49,6 +49,15 @@ static bool profile_uses_a800x_persistence(void)
     return profile->valid && profile->kind == MVS_DEVICE_A800X_FIXED;
 }
 
+static bool profile_has_auto_persistence(void)
+{
+    const mvs_device_profile_t *profile = dsp_model_get_device_profile();
+    return profile->valid &&
+           (profile->kind == MVS_DEVICE_A800X_FIXED ||
+            (profile->kind == MVS_DEVICE_GENERIC_ACP &&
+             profile->fingerprint_valid));
+}
+
 // ---------------------------------------------------------------------------
 // Hilfsfunktionen
 // ---------------------------------------------------------------------------
@@ -102,13 +111,20 @@ static esp_err_t send_ok(httpd_req_t *req, cJSON *extra)
 static void auto_save_dsp_config(void)
 {
     const mvs_device_profile_t *device = dsp_model_get_device_profile();
-    if (!g_dsp_connected || !device->valid ||
-        device->kind != MVS_DEVICE_A800X_FIXED) return;
+    if (!g_dsp_connected || !device->valid) return;
 
     dsp_profile_t config;
     esp_err_t err = dsp_model_readback(&config);
     if (err == ESP_OK) {
-        err = nvs_settings_save_dsp_config(&config);
+        if (device->kind == MVS_DEVICE_A800X_FIXED) {
+            err = nvs_settings_save_a800x_config(&config);
+        } else if (device->kind == MVS_DEVICE_GENERIC_ACP &&
+                   device->fingerprint_valid) {
+            err = nvs_settings_save_generic_config(
+                &device->schema_fingerprint, &config);
+        } else {
+            return;
+        }
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "DSP-Konfiguration auto-gespeichert");
         }
@@ -134,7 +150,7 @@ static esp_err_t handler_status_get(httpd_req_t *req)
     const mvs_device_profile_t *device_profile = dsp_model_get_device_profile();
     bool a800x = dsp_ok && device_profile->kind == MVS_DEVICE_A800X_FIXED;
     cJSON_AddBoolToObject(root, "dsp_config_saved",
-                          a800x && nvs_settings_has_dsp_config());
+                          a800x && nvs_settings_has_a800x_config());
 
     cJSON *device = cJSON_AddObjectToObject(root, "device");
     cJSON_AddStringToObject(device, "profile",
@@ -309,7 +325,7 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
 
     const mvs_device_profile_t *device = dsp_model_get_device_profile();
     cJSON_AddBoolToObject(root, "dsp_config_saved",
-        device->kind == MVS_DEVICE_A800X_FIXED && nvs_settings_has_dsp_config());
+        device->kind == MVS_DEVICE_A800X_FIXED && nvs_settings_has_a800x_config());
 
     char *json = cJSON_PrintUnformatted(root);
     ESP_LOGI(TAG, "DSP JSON: %s", json);
@@ -408,7 +424,7 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "attack_ms", readback.noise_suppressor_attack_ms);
     cJSON_AddNumberToObject(result, "release_ms", readback.noise_suppressor_release_ms);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
     return send_ok(req, result);
 }
 
@@ -488,7 +504,7 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "intensity_pct", readback.virtual_bass_intensity_pct);
     cJSON_AddBoolToObject(result, "bass_enhanced", readback.virtual_bass_enhanced);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
     return send_ok(req, result);
 }
 
@@ -536,7 +552,7 @@ static esp_err_t handler_dsp_toggle_confirmed(httpd_req_t *req,
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
     return send_ok(req, result);
 }
 
@@ -643,7 +659,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     cJSON_AddBoolToObject(result, "enabled", readback.preeq.block_enabled != 0);
     cJSON_AddNumberToObject(result, "pregain_db", readback.preeq.pre_gain_raw / 256.0);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved", profile_uses_a800x_persistence());
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
     return send_ok(req, result);
 }
 
@@ -718,8 +734,7 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "attack_ms", confirmed.attack_ms);
     cJSON_AddNumberToObject(result, "release_ms", confirmed.release_ms);
     cJSON_AddBoolToObject(result, "confirmed", true);
-    cJSON_AddBoolToObject(result, "saved",
-                          device->kind == MVS_DEVICE_A800X_FIXED);
+    cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
     return send_ok(req, result);
 }
 
@@ -762,10 +777,10 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
     } else {
         // Kein Body oder kein JSON: NVS-Konfiguration verwenden
         free(buf);
-        if (!nvs_settings_has_dsp_config()) {
+        if (!nvs_settings_has_a800x_config()) {
             return send_error(req, 400, "No saved DSP configuration to apply");
         }
-        esp_err_t err = nvs_settings_load_dsp_config(&profile);
+        esp_err_t err = nvs_settings_load_a800x_config(&profile);
         if (err != ESP_OK) {
             return send_error(req, 500, "Failed to load saved DSP configuration");
         }
@@ -785,7 +800,7 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
     }
 
     // Im NVS speichern
-    nvs_settings_save_dsp_config(&readback);
+    nvs_settings_save_a800x_config(&readback);
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "applied", true);

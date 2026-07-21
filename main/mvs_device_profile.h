@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
@@ -57,6 +58,24 @@ typedef struct {
 } mvs_effect_ref_t;
 
 // ---------------------------------------------------------------------------
+// Schema-Fingerprint (Generic)
+//
+// Stabiler Schlüssel für Generic-Geräte. Beschreibt die STRUKTUR des Geräts
+// (VID/PID, Adapter, Modultypen), NICHT die konkreten Effekt-Adressen.
+// Adressen dürfen beim Reconnect neu entdeckt werden.
+// ---------------------------------------------------------------------------
+
+#define MVS_FP_MAX_MODULE_TYPES 12
+
+typedef struct {
+    uint16_t vid;
+    uint16_t pid;
+    uint8_t  adapter_kind;                          // mvs_usb_profile_kind_t
+    uint8_t  module_type_count;                     // Anzahl erkannter Modultypen
+    uint16_t module_types[MVS_FP_MAX_MODULE_TYPES]; // Typ-Codes (sortiert)
+} mvs_schema_fingerprint_t;  // 28 Bytes
+
+// ---------------------------------------------------------------------------
 // Geräteprofil (vollständig)
 // ---------------------------------------------------------------------------
 
@@ -77,8 +96,24 @@ typedef struct {
     mvs_effect_ref_t drc;
     mvs_effect_ref_t silence_detector;
 
+    // Optionale/erweiterte Effekte (Phase 2+)
+    mvs_effect_ref_t virtual_bass_classic;
+    mvs_effect_ref_t phase;
+    mvs_effect_ref_t delay_hq;
+    mvs_effect_ref_t usb_out_gain;
+
+    // Capability-Flags
+    bool has_virtual_bass_classic;
+    bool has_phase;
+    bool has_delay_hq;
+    bool has_usb_out_gain;
+
     mvs_preeq_schema_t preeq_schema;
     mvs_drc_schema_t drc_schema;
+
+    // Schema-Fingerprint (nur Generic, nach Discovery gesetzt)
+    mvs_schema_fingerprint_t schema_fingerprint;
+    bool fingerprint_valid;
 } mvs_device_profile_t;
 
 typedef enum {
@@ -86,6 +121,11 @@ typedef enum {
     MVS_MODULE_VIRTUAL_BASS,
     MVS_MODULE_PREEQ,
     MVS_MODULE_DRC,
+    MVS_MODULE_VIRTUAL_BASS_CLASSIC,
+    MVS_MODULE_PHASE,
+    MVS_MODULE_DELAY_HQ,
+    MVS_MODULE_USB_OUT_GAIN,
+    MVS_MODULE_SILENCE_DETECTOR,
 } mvs_module_kind_t;
 
 // ---------------------------------------------------------------------------
@@ -104,8 +144,17 @@ typedef enum {
         .virtual_bass = { .available = true, .effect_id = 0x97 },     \
         .preeq = { .available = true, .effect_id = 0x99 },            \
         .drc = { .available = true, .effect_id = 0x9A },              \
+        .virtual_bass_classic = { .available = false },                \
+        .phase = { .available = false },                               \
+        .delay_hq = { .available = false },                            \
+        .usb_out_gain = { .available = false },                        \
+        .has_virtual_bass_classic = false,                             \
+        .has_phase = false,                                            \
+        .has_delay_hq = false,                                         \
+        .has_usb_out_gain = false,                                     \
         .preeq_schema = MVS_PEQ_SCHEMA_A800X,                 \
         .drc_schema = MVS_DRC_SCHEMA_A800X_4PATH,             \
+        .fingerprint_valid = false,                            \
     })
 
 // ---------------------------------------------------------------------------
@@ -154,6 +203,35 @@ bool mvs_device_profile_has_effect(const mvs_device_profile_t *profile,
                                     uint8_t effect_id);
 
 /**
+ * @brief Schema-Fingerprint aus dem aktuellen Profil berechnen.
+ *
+ * Erfasst VID/PID, Adapter-Typ und erkannte Modultypen (sortiert).
+ * Effekt-Adressen werden NICHT erfasst – nur die Struktur.
+ */
+void mvs_device_profile_compute_fingerprint(mvs_device_profile_t *profile);
+
+/**
+ * @brief Zwei Fingerprints vergleichen.
+ */
+bool mvs_fingerprint_equal(const mvs_schema_fingerprint_t *a,
+                           const mvs_schema_fingerprint_t *b);
+
+/**
+ * @brief Fingerprint-Hash für NVS-Schlüssel berechnen.
+ */
+uint32_t mvs_fingerprint_hash(const mvs_schema_fingerprint_t *fp);
+
+/**
+ * @brief NVS-Schlüssel für Generic-Config ableiten.
+ *
+ * Format: "dg_" + 8 Hex-Zeichen CRC32.
+ * @param fp Fingerprint
+ * @param[out] key Ausgabepuffer (mindestens 12 Bytes)
+ */
+void mvs_fingerprint_to_nvs_key(const mvs_schema_fingerprint_t *fp,
+                                 char *key, size_t key_max);
+
+/**
  * @brief Effekt-ID für Noise Suppressor aus Profil holen.
  *
  * @return 0 wenn nicht verfügbar
@@ -193,6 +271,26 @@ static inline uint8_t mvs_effect_id_drc(const mvs_device_profile_t *p)
 static inline uint8_t mvs_effect_id_sd(const mvs_device_profile_t *p)
 {
     return p->silence_detector.available ? p->silence_detector.effect_id : 0;
+}
+
+static inline uint8_t mvs_effect_id_vb_classic(const mvs_device_profile_t *p)
+{
+    return p->virtual_bass_classic.available ? p->virtual_bass_classic.effect_id : 0;
+}
+
+static inline uint8_t mvs_effect_id_phase(const mvs_device_profile_t *p)
+{
+    return p->phase.available ? p->phase.effect_id : 0;
+}
+
+static inline uint8_t mvs_effect_id_delay_hq(const mvs_device_profile_t *p)
+{
+    return p->delay_hq.available ? p->delay_hq.effect_id : 0;
+}
+
+static inline uint8_t mvs_effect_id_usb_out_gain(const mvs_device_profile_t *p)
+{
+    return p->usb_out_gain.available ? p->usb_out_gain.effect_id : 0;
 }
 
 #ifdef __cplusplus

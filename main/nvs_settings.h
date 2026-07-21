@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "dsp_model.h"
+#include "mvs_device_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,10 +100,75 @@ bool nvs_settings_has_dsp_config(void);
 /**
  * @brief Alle Einstellungen löschen (Factory Reset).
  *
- * Löscht NVS (WiFi, DSP-Konfiguration, Gerätename).
+ * Löscht A800X ("dsp_a800x") und alle Generic-Speicherstände ("dg_*")
+ * sowie WiFi, Hostname, Gerätekonfiguration.
  * Sendet KEIN 0xFD an den DSP.
  */
 esp_err_t nvs_settings_factory_reset(void);
+
+// ---------------------------------------------------------------------------
+// A800X-Konfiguration (fester NVS-Key "dsp_a800x")
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief A800X-DSP-Konfiguration speichern.
+ */
+esp_err_t nvs_settings_save_a800x_config(const dsp_profile_t *config);
+
+/**
+ * @brief A800X-DSP-Konfiguration laden.
+ */
+esp_err_t nvs_settings_load_a800x_config(dsp_profile_t *config);
+
+/**
+ * @brief Prüft ob eine A800X-Konfiguration gespeichert ist.
+ */
+bool nvs_settings_has_a800x_config(void);
+
+// ---------------------------------------------------------------------------
+// Generic-Konfiguration (Fingerprint-basierter NVS-Key "dg_<hash>")
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Generic-Konfiguration speichern.
+ *
+ * Speichert Fingerprint + dsp_profile_t unter Key "dg_<hash>".
+ */
+esp_err_t nvs_settings_save_generic_config(
+    const mvs_schema_fingerprint_t *fp,
+    const dsp_profile_t *config);
+
+/**
+ * @brief Generic-Konfiguration laden.
+ *
+ * Lädt Fingerprint + dsp_profile_t. Prüft ob gespeicherter Fingerprint
+ * mit dem erwarteten übereinstimmt.
+ *
+ * @param fp Erwarteter Fingerprint (wird gegen gespeicherten verglichen)
+ * @param[out] config Ausgabeprofil
+ * @return ESP_OK bei Übereinstimmung, ESP_ERR_NOT_FOUND bei Mismatch
+ */
+esp_err_t nvs_settings_load_generic_config(
+    const mvs_schema_fingerprint_t *fp,
+    dsp_profile_t *config);
+
+/**
+ * @brief Prüft ob eine Generic-Konfiguration für diesen Fingerprint existiert.
+ */
+bool nvs_settings_has_generic_config(const mvs_schema_fingerprint_t *fp);
+
+// ---------------------------------------------------------------------------
+// Legacy-Migration
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Legacy "dsp_cfg" → "dsp_a800x" migrieren.
+ *
+ * Wird einmalig beim Boot aufgerufen. Wenn "dsp_cfg" existiert und
+ * "dsp_a800x" nicht, wird der Blob als A800X migriert.
+ * (Generic-Persistence war in 0.4.0 deaktiviert.)
+ */
+esp_err_t nvs_settings_migrate_legacy(void);
 
 #ifdef __cplusplus
 }

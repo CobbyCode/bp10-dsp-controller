@@ -48,6 +48,22 @@ typedef struct {
 
     // DRC / Compressor (Profil-DRC) — vollständiger State
     mvs_drc_packed_state_t drc;
+
+    // Virtual Bass Classic (Phase 2+, separat von VB)
+    bool    virtual_bass_classic_enabled;
+    uint16_t virtual_bass_classic_cutoff_hz;
+    uint16_t virtual_bass_classic_intensity_pct;
+    bool    virtual_bass_classic_enhanced;
+
+    // Phase-Invert (Phase 2+)
+    bool    phase_invert;
+
+    // Delay/HQ (Phase 2+)
+    bool    delay_hq_enabled;
+    uint16_t delay_ms;
+
+    // USB Out Gain (Phase 2+, optional)
+    uint16_t usb_out_gain;
 } dsp_profile_t;
 
 // ---------------------------------------------------------------------------
@@ -79,6 +95,10 @@ uint8_t dsp_model_get_effect_id_vb(void);
 uint8_t dsp_model_get_effect_id_sd(void);
 uint8_t dsp_model_get_effect_id_preeq(void);
 uint8_t dsp_model_get_effect_id_drc(void);
+uint8_t dsp_model_get_effect_id_vb_classic(void);
+uint8_t dsp_model_get_effect_id_phase(void);
+uint8_t dsp_model_get_effect_id_delay_hq(void);
+uint8_t dsp_model_get_effect_id_usb_out_gain(void);
 
 /**
  * @return Geräteprofil-Referenz.
