@@ -921,7 +921,9 @@ esp_err_t dsp_model_set_phase(bool phase_invert)
     ESP_RETURN_ON_ERROR(mvs_build_write_frame(s_device_profile.phase.effect_id,
                         selector, phase_invert ? 1U : 0U, frame, sizeof(frame)),
                         TAG, "Phase frame");
-    return send_mvs_command(frame, sizeof(frame));
+    ESP_RETURN_ON_ERROR(send_mvs_command(frame, sizeof(frame)), TAG, "Phase send");
+    vTaskDelay(pdMS_TO_TICKS(20));
+    return ESP_OK;
 }
 
 esp_err_t dsp_model_read_delay(bool *enable, uint16_t *delay_ms,

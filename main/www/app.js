@@ -42,7 +42,8 @@
 
   const factoryValueButtonIds = [
     'btn-noise-read', 'btn-bass-read', 'btn-silence-read',
-    'btn-preeq-read', 'btn-drc-reset'
+    'btn-preeq-read', 'btn-drc-reset',
+    'btn-vb-classic-read', 'btn-phase-read'
   ];
 
   function hasA800xFactoryDefaults() {
@@ -441,6 +442,15 @@
       $('vb-classic-message').textContent = 'Unapplied changes';
       $('vb-classic-message').className = 'form-message';
     }));
+  $('btn-vb-classic-read').addEventListener('click', () => {
+    if (!hasA800xFactoryDefaults()) return;
+    $('vb-classic-enable').checked = false;
+    $('vb-classic-cutoff').value = 100;
+    $('vb-classic-intensity').value = 35;
+    $('vb-classic-module').querySelector('.module-editor').classList.add('is-dirty');
+    $('vb-classic-message').textContent = 'Factory values loaded locally · Apply to write';
+    $('vb-classic-message').className = 'form-message';
+  });
   $('btn-vb-classic-apply').addEventListener('click', () => applyWithReadback('/dsp/vb-classic', {
     enable: $('vb-classic-enable').checked,
     cutoff_hz: Number($('vb-classic-cutoff').value),
@@ -461,6 +471,13 @@
   $('phase-invert').addEventListener('input', () => {
     $('phase-module').querySelector('.module-editor').classList.add('is-dirty');
     $('phase-message').textContent = 'Unapplied change';
+    $('phase-message').className = 'form-message';
+  });
+  $('btn-phase-read').addEventListener('click', () => {
+    if (!hasA800xFactoryDefaults()) return;
+    $('phase-invert').checked = true;
+    $('phase-module').querySelector('.module-editor').classList.add('is-dirty');
+    $('phase-message').textContent = 'Factory values loaded locally · Apply to write';
     $('phase-message').className = 'form-message';
   });
   $('btn-phase-apply').addEventListener('click', () => applyWithReadback('/dsp/phase', {

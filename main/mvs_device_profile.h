@@ -143,14 +143,14 @@ typedef enum {
         .noise_suppressor = { .available = true, .effect_id = 0x88 }, \
         .silence_detector = { .available = true, .effect_id = 0x89 }, \
         .virtual_bass = { .available = true, .effect_id = 0x97 },     \
+        .virtual_bass_classic = { .available = true, .effect_id = 0x98 }, \
         .preeq = { .available = true, .effect_id = 0x99 },            \
         .drc = { .available = true, .effect_id = 0x9A },              \
-        .virtual_bass_classic = { .available = false },                \
-        .phase = { .available = false },                               \
+        .phase = { .available = true, .effect_id = 0x96, .state_size = 4 }, \
         .delay_hq = { .available = false },                            \
         .usb_out_gain = { .available = false },                        \
-        .has_virtual_bass_classic = false,                             \
-        .has_phase = false,                                            \
+        .has_virtual_bass_classic = true,                              \
+        .has_phase = true,                                             \
         .has_delay_hq = false,                                         \
         .has_usb_out_gain = false,                                     \
         .preeq_schema = MVS_PEQ_SCHEMA_A800X,                 \
