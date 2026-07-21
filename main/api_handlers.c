@@ -282,7 +282,6 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
         cJSON_AddBoolToObject(vbc, "enabled", profile.virtual_bass_classic_enabled);
         cJSON_AddNumberToObject(vbc, "cutoff_hz", profile.virtual_bass_classic_cutoff_hz);
         cJSON_AddNumberToObject(vbc, "intensity_pct", profile.virtual_bass_classic_intensity_pct);
-        cJSON_AddBoolToObject(vbc, "bass_enhanced", profile.virtual_bass_classic_enhanced);
     }
     cJSON *phase = cJSON_AddObjectToObject(root, "music_phase");
     cJSON_AddBoolToObject(phase, "valid", device_profile->phase.available);
@@ -554,34 +553,31 @@ static esp_err_t handler_dsp_vb_classic_post(httpd_req_t *req)
     cJSON *enable = cJSON_GetObjectItem(json, "enable");
     cJSON *cutoff = cJSON_GetObjectItem(json, "cutoff_hz");
     cJSON *intensity = cJSON_GetObjectItem(json, "intensity_pct");
-    cJSON *enhanced = cJSON_GetObjectItem(json, "bass_enhanced");
     if (!cJSON_IsBool(enable) || !cJSON_IsNumber(cutoff) ||
-        !cJSON_IsNumber(intensity) || !cJSON_IsBool(enhanced) ||
+        !cJSON_IsNumber(intensity) ||
         cutoff->valuedouble < 0 || cutoff->valuedouble > UINT16_MAX ||
         intensity->valuedouble < 0 || intensity->valuedouble > UINT16_MAX) {
         cJSON_Delete(json); return send_error(req, 400, "Invalid VB Classic values");
     }
-    bool requested = cJSON_IsTrue(enable), requested_enhanced = cJSON_IsTrue(enhanced);
+    bool requested = cJSON_IsTrue(enable);
     uint16_t requested_cutoff = (uint16_t)cutoff->valuedouble;
     uint16_t requested_intensity = (uint16_t)intensity->valuedouble;
     cJSON_Delete(json);
     esp_err_t err = dsp_model_set_virtual_bass_classic_state(
-        requested, requested_cutoff, requested_intensity, requested_enhanced);
-    bool confirmed = false, confirmed_enhanced = false;
+        requested, requested_cutoff, requested_intensity);
+    bool confirmed = false;
     uint16_t confirmed_cutoff = 0, confirmed_intensity = 0;
     if (err == ESP_OK) err = dsp_model_read_virtual_bass_classic(
-        &confirmed, &confirmed_cutoff, &confirmed_intensity, &confirmed_enhanced);
+        &confirmed, &confirmed_cutoff, &confirmed_intensity);
     if (err != ESP_OK || confirmed != requested ||
         (requested && (confirmed_cutoff != requested_cutoff ||
-         confirmed_intensity != requested_intensity ||
-         confirmed_enhanced != requested_enhanced)))
+         confirmed_intensity != requested_intensity)))
         return send_error(req, 500, "VB Classic readback mismatch");
     auto_save_dsp_config();
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed);
     cJSON_AddNumberToObject(result, "cutoff_hz", confirmed_cutoff);
     cJSON_AddNumberToObject(result, "intensity_pct", confirmed_intensity);
-    cJSON_AddBoolToObject(result, "bass_enhanced", confirmed_enhanced);
     cJSON_AddBoolToObject(result, "confirmed", true);
     cJSON_AddBoolToObject(result, "saved", profile_has_auto_persistence());
     return send_ok(req, result);

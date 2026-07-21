@@ -339,8 +339,7 @@ esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile)
         err = dsp_model_set_virtual_bass_classic_state(
             profile->virtual_bass_classic_enabled,
             profile->virtual_bass_classic_cutoff_hz,
-            profile->virtual_bass_classic_intensity_pct,
-            profile->virtual_bass_classic_enhanced);
+            profile->virtual_bass_classic_intensity_pct);
         if (err != ESP_OK && first_err == ESP_OK) first_err = err;
     }
     if (profile->phase2_extended_valid && s_device_profile.phase.available) {
@@ -464,8 +463,7 @@ esp_err_t dsp_model_readback(dsp_profile_t *profile)
         esp_err_t err = dsp_model_read_virtual_bass_classic(
             &profile->virtual_bass_classic_enabled,
             &profile->virtual_bass_classic_cutoff_hz,
-            &profile->virtual_bass_classic_intensity_pct,
-            &profile->virtual_bass_classic_enhanced);
+            &profile->virtual_bass_classic_intensity_pct);
         if (err != ESP_OK) { extended_ok = false; ESP_LOGW(TAG, "VB Classic readback failed: %s",
                                     esp_err_to_name(err)); }
     }
@@ -872,8 +870,7 @@ esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
 }
 
 esp_err_t dsp_model_read_virtual_bass_classic(bool *enable, uint16_t *cutoff_hz,
-                                               uint16_t *intensity_pct,
-                                               bool *bass_enhanced)
+                                               uint16_t *intensity_pct)
 {
     if (!s_device_profile.virtual_bass_classic.available)
         return ESP_ERR_NOT_SUPPORTED;
@@ -881,21 +878,19 @@ esp_err_t dsp_model_read_virtual_bass_classic(bool *enable, uint16_t *cutoff_hz,
     ESP_RETURN_ON_ERROR(read_module_state(
         s_device_profile.virtual_bass_classic.effect_id, state, sizeof(state),
         &length), TAG, "VB Classic read");
-    return mvs_decode_virtual_bass(state, length, enable, cutoff_hz,
-                                   intensity_pct, bass_enhanced);
+    return mvs_decode_virtual_bass_classic(state, length, enable, cutoff_hz,
+                                           intensity_pct);
 }
 
 esp_err_t dsp_model_set_virtual_bass_classic_state(bool enable,
                                                     uint16_t cutoff_hz,
-                                                    uint16_t intensity_pct,
-                                                    bool bass_enhanced)
+                                                    uint16_t intensity_pct)
 {
     if (!s_device_profile.virtual_bass_classic.available)
         return ESP_ERR_NOT_SUPPORTED;
     uint8_t id = s_device_profile.virtual_bass_classic.effect_id;
-    const uint16_t values[] = { enable ? 1U : 0U, cutoff_hz, intensity_pct,
-                                bass_enhanced ? 1U : 0U };
-    size_t count = enable ? 4U : 1U;
+    const uint16_t values[] = { enable ? 1U : 0U, cutoff_hz, intensity_pct };
+    size_t count = enable ? 3U : 1U;
     for (size_t selector = 0; selector < count; selector++) {
         uint8_t frame[8];
         ESP_RETURN_ON_ERROR(mvs_build_write_frame(id, (uint8_t)selector,

@@ -53,7 +53,6 @@ typedef struct {
     bool    virtual_bass_classic_enabled;
     uint16_t virtual_bass_classic_cutoff_hz;
     uint16_t virtual_bass_classic_intensity_pct;
-    bool    virtual_bass_classic_enhanced;
 
     // Phase-Invert (Phase 2+)
     bool    phase_invert;
@@ -184,12 +183,10 @@ esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
                                             bool bass_enhanced);
 
 esp_err_t dsp_model_read_virtual_bass_classic(bool *enable, uint16_t *cutoff_hz,
-                                               uint16_t *intensity_pct,
-                                               bool *bass_enhanced);
+                                               uint16_t *intensity_pct);
 esp_err_t dsp_model_set_virtual_bass_classic_state(bool enable,
                                                     uint16_t cutoff_hz,
-                                                    uint16_t intensity_pct,
-                                                    bool bass_enhanced);
+                                                    uint16_t intensity_pct);
 esp_err_t dsp_model_read_phase(bool *phase_invert);
 esp_err_t dsp_model_set_phase(bool phase_invert);
 esp_err_t dsp_model_read_delay(bool *enable, uint16_t *delay_ms,

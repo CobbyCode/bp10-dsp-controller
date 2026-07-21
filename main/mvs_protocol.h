@@ -379,6 +379,16 @@ esp_err_t mvs_decode_virtual_bass(const uint8_t *data, uint16_t length,
                                   uint16_t *intensity_percent,
                                   bool *bass_enhanced);
 
+/**
+ * @brief Readback-Daten für Virtual Bass Classic parsen.
+ *
+ * VB Classic hat nur 3 Selectoren (Enable, Cutoff, Intensity) = 6 Bytes.
+ * Kein BassEnhanced-Selector.
+ */
+esp_err_t mvs_decode_virtual_bass_classic(const uint8_t *data, uint16_t length,
+                                          bool *enabled, uint16_t *cutoff_hz,
+                                          uint16_t *intensity_percent);
+
 /** Music Phase: 2-byte value, or 4-byte enable + phase value. */
 esp_err_t mvs_decode_phase(const uint8_t *data, uint16_t length,
                            bool *phase_invert);

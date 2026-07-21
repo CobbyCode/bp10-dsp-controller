@@ -89,7 +89,8 @@ static esp_err_t discover_catalog(mvs_device_profile_t *profile,
             continue;
         }
         char name[64];
-        mvs_normalize_catalog_name(response + 5, response[3] - 1U,
+        uint16_t raw_name_len = response[3] - 1U;
+        mvs_normalize_catalog_name(response + 5, raw_name_len,
                                    name, sizeof(name));
         if (mvs_device_profile_map_catalog_entry(profile, index,
                                                  types[index - 1U], name)) {
@@ -120,9 +121,9 @@ static void validate_module(mvs_device_profile_t *profile,
         valid = mvs_decode_virtual_bass(state, state_len, &enabled, &cutoff,
                                         &intensity, &enhanced) == ESP_OK;
     } else if (valid && module == MVS_MODULE_VIRTUAL_BASS_CLASSIC) {
-        bool enabled, enhanced; uint16_t cutoff, intensity;
-        valid = mvs_decode_virtual_bass(state, state_len, &enabled, &cutoff,
-                                        &intensity, &enhanced) == ESP_OK;
+        bool enabled; uint16_t cutoff, intensity;
+        valid = mvs_decode_virtual_bass_classic(state, state_len, &enabled,
+                                                 &cutoff, &intensity) == ESP_OK;
     } else if (valid && module == MVS_MODULE_PHASE) {
         bool inverted;
         valid = mvs_decode_phase(state, state_len, &inverted) == ESP_OK;
@@ -142,8 +143,9 @@ static void validate_module(mvs_device_profile_t *profile,
         } else valid = false;
     }
     mvs_device_profile_set_module_validated(profile, module, valid, state_len);
-    ESP_LOGI(TAG, "Module 0x%02X validation: %s (%u bytes)", effect->effect_id,
-             valid ? "ok" : "disabled", state_len);
+    ESP_LOGI(TAG, "Module 0x%02X validation: %s (%u bytes) err=%s", effect->effect_id,
+             valid ? "ok" : "disabled", state_len,
+             err == ESP_OK ? "ok" : "read_fail");
 }
 
 void mvs_device_runtime_clear(void)
@@ -178,9 +180,10 @@ esp_err_t mvs_device_runtime_identify(void)
                         &profile.virtual_bass);
         validate_module(&profile, MVS_MODULE_PREEQ, &profile.preeq);
         validate_module(&profile, MVS_MODULE_DRC, &profile.drc);
-        if (profile.virtual_bass_classic.effect_id != 0)
+        if (profile.virtual_bass_classic.effect_id != 0) {
             validate_module(&profile, MVS_MODULE_VIRTUAL_BASS_CLASSIC,
                             &profile.virtual_bass_classic);
+        }
         if (profile.phase.effect_id != 0)
             validate_module(&profile, MVS_MODULE_PHASE, &profile.phase);
         if (profile.delay_hq.effect_id != 0)

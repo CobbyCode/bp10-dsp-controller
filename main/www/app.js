@@ -407,37 +407,71 @@
     bassEditor.classList.remove('is-dirty');
   }
 
+  async function applyWithReadback(apiPath, payload, opts) {
+    const { button, message, state, editor, formSetter } = opts;
+    button.disabled = true;
+    message.textContent = 'Writing and verifying…';
+    try {
+      const result = await api('POST', apiPath, payload);
+      if (result.status !== 'ok' || !result.data || !result.data.confirmed) {
+        throw new Error(result.error || 'Readback mismatch');
+      }
+      formSetter(result.data);
+      editor.classList.remove('is-dirty');
+      message.textContent = 'Change confirmed by readback';
+      message.className = 'form-message is-success';
+    } catch (error) {
+      state.textContent = 'MISMATCH';
+      state.className = 'module-state is-error';
+      message.textContent = error.message;
+      message.className = 'form-message is-error';
+    } finally { button.disabled = false; }
+  }
+
   function setVbClassicForm(data) {
     $('vb-classic-enable').checked = data.enabled === true;
     $('vb-classic-cutoff').value = data.cutoff_hz;
     $('vb-classic-intensity').value = data.intensity_pct;
-    $('vb-classic-enhanced').checked = data.bass_enhanced === true;
     $('vb-classic-state').textContent = (data.enabled ? 'ON' : 'OFF') + ' · CONFIRMED';
     $('vb-classic-state').className = 'module-state ' + (data.enabled ? 'is-on' : '');
   }
-  $('btn-vb-classic-apply').addEventListener('click', async () => {
-    const result = await api('POST', '/dsp/vb-classic', {
-      enable: $('vb-classic-enable').checked,
-      cutoff_hz: Number($('vb-classic-cutoff').value),
-      intensity_pct: Number($('vb-classic-intensity').value),
-      bass_enhanced: $('vb-classic-enhanced').checked
-    });
-    if (result.status === 'ok' && result.data && result.data.confirmed) {
-      setVbClassicForm(result.data); $('vb-classic-message').textContent = 'Confirmed by readback';
-    } else $('vb-classic-message').textContent = result.error || 'Readback mismatch';
-  });
+  ['vb-classic-enable','vb-classic-cutoff','vb-classic-intensity']
+    .forEach(id => $(id).addEventListener('input', () => {
+      $('vb-classic-module').querySelector('.module-editor').classList.add('is-dirty');
+      $('vb-classic-message').textContent = 'Unapplied changes';
+      $('vb-classic-message').className = 'form-message';
+    }));
+  $('btn-vb-classic-apply').addEventListener('click', () => applyWithReadback('/dsp/vb-classic', {
+    enable: $('vb-classic-enable').checked,
+    cutoff_hz: Number($('vb-classic-cutoff').value),
+    intensity_pct: Number($('vb-classic-intensity').value)
+  }, {
+    button: $('btn-vb-classic-apply'),
+    message: $('vb-classic-message'),
+    state: $('vb-classic-state'),
+    editor: $('vb-classic-module').querySelector('.module-editor'),
+    formSetter: setVbClassicForm
+  }));
 
   function setPhaseForm(data) {
     $('phase-invert').checked = data.inverted === true;
     $('phase-state').textContent = (data.inverted ? 'INVERTED' : 'NORMAL') + ' · CONFIRMED';
     $('phase-state').className = 'module-state ' + (data.inverted ? 'is-on' : '');
   }
-  $('btn-phase-apply').addEventListener('click', async () => {
-    const result = await api('POST', '/dsp/phase', { invert: $('phase-invert').checked });
-    if (result.status === 'ok' && result.data && result.data.confirmed) {
-      setPhaseForm(result.data); $('phase-message').textContent = 'Confirmed by readback';
-    } else $('phase-message').textContent = result.error || 'Readback mismatch';
+  $('phase-invert').addEventListener('input', () => {
+    $('phase-module').querySelector('.module-editor').classList.add('is-dirty');
+    $('phase-message').textContent = 'Unapplied change';
+    $('phase-message').className = 'form-message';
   });
+  $('btn-phase-apply').addEventListener('click', () => applyWithReadback('/dsp/phase', {
+    invert: $('phase-invert').checked
+  }, {
+    button: $('btn-phase-apply'),
+    message: $('phase-message'),
+    state: $('phase-state'),
+    editor: $('phase-module').querySelector('.module-editor'),
+    formSetter: setPhaseForm
+  }));
 
   function setDelayForm(data) {
     $('delay-enable').checked = data.enabled === true;
@@ -446,15 +480,23 @@
     $('delay-state').textContent = (data.enabled ? 'ON' : 'OFF') + ' · CONFIRMED';
     $('delay-state').className = 'module-state ' + (data.enabled ? 'is-on' : '');
   }
-  $('btn-delay-apply').addEventListener('click', async () => {
-    const result = await api('POST', '/dsp/delay', {
-      enable: $('delay-enable').checked,
-      delay_ms: Number($('delay-ms').value), hq_enabled: $('delay-hq').checked
-    });
-    if (result.status === 'ok' && result.data && result.data.confirmed) {
-      setDelayForm(result.data); $('delay-message').textContent = 'Confirmed by readback';
-    } else $('delay-message').textContent = result.error || 'Readback mismatch';
-  });
+  ['delay-enable','delay-ms','delay-hq']
+    .forEach(id => $(id).addEventListener('input', () => {
+      $('delay-module').querySelector('.module-editor').classList.add('is-dirty');
+      $('delay-message').textContent = 'Unapplied changes';
+      $('delay-message').className = 'form-message';
+    }));
+  $('btn-delay-apply').addEventListener('click', () => applyWithReadback('/dsp/delay', {
+    enable: $('delay-enable').checked,
+    delay_ms: Number($('delay-ms').value),
+    hq_enabled: $('delay-hq').checked
+  }, {
+    button: $('btn-delay-apply'),
+    message: $('delay-message'),
+    state: $('delay-state'),
+    editor: $('delay-module').querySelector('.module-editor'),
+    formSetter: setDelayForm
+  }));
 
   ['virtual-bass', 'bass-cutoff', 'bass-intensity', 'bass-enhanced']
     .forEach(id => $(id).addEventListener('input', () => {

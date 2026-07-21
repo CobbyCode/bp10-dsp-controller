@@ -312,6 +312,21 @@ esp_err_t mvs_decode_virtual_bass(const uint8_t *data, uint16_t length,
     return ESP_OK;
 }
 
+esp_err_t mvs_decode_virtual_bass_classic(const uint8_t *data, uint16_t length,
+                                          bool *enabled, uint16_t *cutoff_hz,
+                                          uint16_t *intensity_percent)
+{
+    // VB Classic: 3 selectors = 6 bytes (no BassEnhanced)
+    // Format: <ena(2)> <cutoff(2)> <intensity(2)>
+    if (length < 6) return ESP_ERR_INVALID_SIZE;
+
+    if (enabled)              *enabled              = read_u16_le(data + 0) != 0;
+    if (cutoff_hz)            *cutoff_hz            = read_u16_le(data + 2);
+    if (intensity_percent)    *intensity_percent    = read_u16_le(data + 4);
+
+    return ESP_OK;
+}
+
 esp_err_t mvs_decode_phase(const uint8_t *data, uint16_t length,
                            bool *phase_invert)
 {

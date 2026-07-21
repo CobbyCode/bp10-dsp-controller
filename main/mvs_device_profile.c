@@ -70,6 +70,16 @@ static bool set_candidate(mvs_effect_ref_t *effect, uint8_t catalog_index,
     return true;
 }
 
+static bool is_virtual_bass_classic_name(const char *name)
+{
+    // Exact normalized match for the NVarcher catalog entry.
+    // The firmware truncates "Music Virtual Bass Classic" to
+    // "Music Virtual Bass Clas" in its 26-effect catalog.
+    // Normalized names are compared case-insensitively.
+    // "Rec Virtual Bass Clas" (second filter bank) must NOT match.
+    return strcasecmp(name, "Music Virtual Bass Clas") == 0;
+}
+
 bool mvs_device_profile_map_catalog_entry(mvs_device_profile_t *profile,
                                           uint8_t catalog_index,
                                           uint16_t effect_type,
@@ -81,6 +91,10 @@ bool mvs_device_profile_map_catalog_entry(mvs_device_profile_t *profile,
         return set_candidate(&profile->noise_suppressor, catalog_index, effect_type);
     if (effect_type == 13 && strcasecmp(normalized_name, "Music Virtual Bass") == 0)
         return set_candidate(&profile->virtual_bass, catalog_index, effect_type);
+    // VB Classic may have a different effect_type on NVarcher than on A800X.
+    if (is_virtual_bass_classic_name(normalized_name))
+        return set_candidate(&profile->virtual_bass_classic, catalog_index,
+                             effect_type);
     if (effect_type == 4 && strcasecmp(normalized_name, "Music Pre EQ") == 0)
         return set_candidate(&profile->preeq, catalog_index, effect_type);
     if (effect_type == 2 && strcasecmp(normalized_name, "Music DRC") == 0)
@@ -96,7 +110,9 @@ bool mvs_device_profile_map_catalog_secondary(mvs_device_profile_t *profile,
 {
     if (!profile || profile->kind != MVS_DEVICE_GENERIC_ACP ||
         !normalized_name) return false;
-    // VB Classic: gleicher effect_type (13) wie VB, anderer Name
+    // VB Classic: primary mapping catches "Music Virtual Bass Clas" (NVarcher
+    // truncation) regardless of effect_type. This secondary path is a future-proof
+    // fallback if a full "Music Virtual Bass Classic" string ever appears.
     if (effect_type == 13 &&
         strcasecmp(normalized_name, "Music Virtual Bass Classic") == 0)
         return set_candidate(&profile->virtual_bass_classic, catalog_index,
@@ -144,7 +160,7 @@ void mvs_device_profile_set_module_validated(mvs_device_profile_t *profile,
             break;
         case MVS_MODULE_VIRTUAL_BASS_CLASSIC:
             effect = &profile->virtual_bass_classic;
-            valid = valid && state_size == 8;  // gleiche Wire-Größe wie VB
+            valid = valid && state_size == 6;  // 3 Selectoren (kein Enhanced)
             break;
         case MVS_MODULE_PHASE:
             effect = &profile->phase;
