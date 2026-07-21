@@ -7,7 +7,15 @@
 #include "mvs_device_profile.h"
 #include <string.h>
 #include <strings.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include "esp_log.h"
+
+// Forward declaration (defined below, called by mvs_device_profile_map_catalog_entry)
+bool mvs_device_profile_map_catalog_secondary(mvs_device_profile_t *profile,
+                                              uint8_t catalog_index,
+                                              uint16_t effect_type,
+                                              const char *normalized_name);
 
 static const char *TAG = "bp10_dev_profile";
 
@@ -62,6 +70,16 @@ static bool set_candidate(mvs_effect_ref_t *effect, uint8_t catalog_index,
     return true;
 }
 
+static bool is_virtual_bass_classic_name(const char *name)
+{
+    // Exact normalized match for the NVarcher catalog entry.
+    // The firmware truncates "Music Virtual Bass Classic" to
+    // "Music Virtual Bass Clas" in its 26-effect catalog.
+    // Normalized names are compared case-insensitively.
+    // "Rec Virtual Bass Clas" (second filter bank) must NOT match.
+    return strcasecmp(name, "Music Virtual Bass Clas") == 0;
+}
+
 bool mvs_device_profile_map_catalog_entry(mvs_device_profile_t *profile,
                                           uint8_t catalog_index,
                                           uint16_t effect_type,
@@ -73,10 +91,43 @@ bool mvs_device_profile_map_catalog_entry(mvs_device_profile_t *profile,
         return set_candidate(&profile->noise_suppressor, catalog_index, effect_type);
     if (effect_type == 13 && strcasecmp(normalized_name, "Music Virtual Bass") == 0)
         return set_candidate(&profile->virtual_bass, catalog_index, effect_type);
+    // VB Classic may have a different effect_type on NVarcher than on A800X.
+    if (is_virtual_bass_classic_name(normalized_name))
+        return set_candidate(&profile->virtual_bass_classic, catalog_index,
+                             effect_type);
     if (effect_type == 4 && strcasecmp(normalized_name, "Music Pre EQ") == 0)
         return set_candidate(&profile->preeq, catalog_index, effect_type);
     if (effect_type == 2 && strcasecmp(normalized_name, "Music DRC") == 0)
         return set_candidate(&profile->drc, catalog_index, effect_type);
+    return mvs_device_profile_map_catalog_secondary(profile, catalog_index,
+                                                    effect_type, normalized_name);
+}
+
+bool mvs_device_profile_map_catalog_secondary(mvs_device_profile_t *profile,
+                                              uint8_t catalog_index,
+                                              uint16_t effect_type,
+                                              const char *normalized_name)
+{
+    if (!profile || profile->kind != MVS_DEVICE_GENERIC_ACP ||
+        !normalized_name) return false;
+    // VB Classic: primary mapping catches "Music Virtual Bass Clas" (NVarcher
+    // truncation) regardless of effect_type. This secondary path is a future-proof
+    // fallback if a full "Music Virtual Bass Classic" string ever appears.
+    if (effect_type == 13 &&
+        strcasecmp(normalized_name, "Music Virtual Bass Classic") == 0)
+        return set_candidate(&profile->virtual_bass_classic, catalog_index,
+                             effect_type);
+    // Phase
+    if (strcasecmp(normalized_name, "Music Phase") == 0)
+        return set_candidate(&profile->phase, catalog_index, effect_type);
+    // Classic exposes one Music Delay state containing delay + HQ enable.
+    if (strcasecmp(normalized_name, "Music Delay") == 0 ||
+        strcasecmp(normalized_name, "Music Delay HQ") == 0)
+        return set_candidate(&profile->delay_hq, catalog_index, effect_type);
+    // USB Out Gain
+    if (strcasecmp(normalized_name, "Music USB Out Gain") == 0 ||
+        strcasecmp(normalized_name, "USB Out Gain") == 0)
+        return set_candidate(&profile->usb_out_gain, catalog_index, effect_type);
     return false;
 }
 
@@ -107,14 +158,45 @@ void mvs_device_profile_set_module_validated(mvs_device_profile_t *profile,
             if (valid) profile->drc_schema = state_size == 38
                 ? MVS_DRC_SCHEMA_CLASSIC_3BAND : MVS_DRC_SCHEMA_A800X_4PATH;
             break;
+        case MVS_MODULE_VIRTUAL_BASS_CLASSIC:
+            effect = &profile->virtual_bass_classic;
+            valid = valid && state_size == 6;  // 3 Selectoren (kein Enhanced)
+            break;
+        case MVS_MODULE_PHASE:
+            effect = &profile->phase;
+            valid = valid && (state_size >= 2 && state_size <= 4);
+            break;
+        case MVS_MODULE_DELAY_HQ:
+            effect = &profile->delay_hq;
+            valid = valid && state_size == 8;
+            break;
+        case MVS_MODULE_USB_OUT_GAIN:
+            effect = &profile->usb_out_gain;
+            valid = valid && (state_size >= 2 && state_size <= 4);
+            break;
+        case MVS_MODULE_SILENCE_DETECTOR:
+            effect = &profile->silence_detector;
+            valid = valid && state_size >= 2;
+            break;
         default:
             return;
     }
     if (!effect || effect->effect_id == 0) return;
     effect->available = valid;
+    effect->state_size = valid ? state_size : 0;
+
+    // Capability-Flags aktualisieren
+    profile->has_virtual_bass_classic = profile->virtual_bass_classic.available;
+    profile->has_phase = profile->phase.available;
+    profile->has_delay_hq = profile->delay_hq.available;
+    profile->has_usb_out_gain = profile->usb_out_gain.available;
+
+    // Profil-Validität: mindestens ein Kernmodul oder ein erweitertes Modul
     profile->valid = profile->noise_suppressor.available ||
                      profile->virtual_bass.available || profile->preeq.available ||
-                     profile->drc.available;
+                     profile->drc.available ||
+                     profile->virtual_bass_classic.available ||
+                     profile->phase.available || profile->delay_hq.available;
 }
 
 void mvs_device_profile_publish(const mvs_device_profile_t *profile)
@@ -137,5 +219,96 @@ bool mvs_device_profile_has_effect(const mvs_device_profile_t *profile,
     if (profile->preeq.available && profile->preeq.effect_id == effect_id) return true;
     if (profile->drc.available && profile->drc.effect_id == effect_id) return true;
     if (profile->silence_detector.available && profile->silence_detector.effect_id == effect_id) return true;
+    if (profile->virtual_bass_classic.available && profile->virtual_bass_classic.effect_id == effect_id) return true;
+    if (profile->phase.available && profile->phase.effect_id == effect_id) return true;
+    if (profile->delay_hq.available && profile->delay_hq.effect_id == effect_id) return true;
+    if (profile->usb_out_gain.available && profile->usb_out_gain.effect_id == effect_id) return true;
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Schema-Fingerprint
+// ---------------------------------------------------------------------------
+
+static int cmp_u16(const void *a, const void *b)
+{
+    uint16_t va = *(const uint16_t *)a;
+    uint16_t vb = *(const uint16_t *)b;
+    return (va > vb) - (va < vb);
+}
+
+void mvs_device_profile_compute_fingerprint(mvs_device_profile_t *profile)
+{
+    if (!profile) return;
+    memset(&profile->schema_fingerprint, 0, sizeof(profile->schema_fingerprint));
+    profile->fingerprint_valid = false;
+
+    mvs_schema_fingerprint_t *fp = &profile->schema_fingerprint;
+    fp->vid = profile->vid;
+    fp->pid = profile->pid;
+    fp->adapter_kind = (uint8_t)profile->kind;
+
+    // Modultypen sammeln (effect_type der verfügbaren Module)
+    uint16_t types[MVS_FP_MAX_MODULE_TYPES];
+    uint8_t count = 0;
+
+    if (profile->noise_suppressor.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->noise_suppressor.effect_type;
+    if (profile->virtual_bass.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->virtual_bass.effect_type;
+    if (profile->preeq.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->preeq.effect_type;
+    if (profile->drc.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->drc.effect_type;
+    if (profile->silence_detector.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->silence_detector.effect_type > 0
+                            ? profile->silence_detector.effect_type : 99;
+    if (profile->virtual_bass_classic.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->virtual_bass_classic.effect_type;
+    if (profile->phase.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->phase.effect_type > 0
+                            ? profile->phase.effect_type : 98;
+    if (profile->delay_hq.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->delay_hq.effect_type > 0
+                            ? profile->delay_hq.effect_type : 97;
+    if (profile->usb_out_gain.available && count < MVS_FP_MAX_MODULE_TYPES)
+        types[count++] = profile->usb_out_gain.effect_type > 0
+                            ? profile->usb_out_gain.effect_type : 96;
+
+    // Sortieren für deterministischen Fingerprint
+    qsort(types, count, sizeof(uint16_t), cmp_u16);
+
+    fp->module_type_count = count;
+    memcpy(fp->module_types, types, count * sizeof(uint16_t));
+
+    profile->fingerprint_valid = true;
+    ESP_LOGI(TAG, "Fingerprint berechnet: VID=0x%04X PID=0x%04X adapter=%u module_count=%u",
+             fp->vid, fp->pid, fp->adapter_kind, fp->module_type_count);
+}
+
+bool mvs_fingerprint_equal(const mvs_schema_fingerprint_t *a,
+                           const mvs_schema_fingerprint_t *b)
+{
+    if (!a || !b) return false;
+    return memcmp(a, b, sizeof(mvs_schema_fingerprint_t)) == 0;
+}
+
+uint32_t mvs_fingerprint_hash(const mvs_schema_fingerprint_t *fp)
+{
+    // FNV-1a 32-bit
+    uint32_t hash = 0x811c9dc5U;
+    const uint8_t *data = (const uint8_t *)fp;
+    for (size_t i = 0; i < sizeof(mvs_schema_fingerprint_t); i++) {
+        hash ^= data[i];
+        hash *= 0x01000193U;
+    }
+    return hash;
+}
+
+void mvs_fingerprint_to_nvs_key(const mvs_schema_fingerprint_t *fp,
+                                 char *key, size_t key_max)
+{
+    if (!fp || !key || key_max < 12) { if (key && key_max > 0) key[0] = '\0'; return; }
+    uint32_t h = mvs_fingerprint_hash(fp);
+    snprintf(key, key_max, "dg_%08lx", (unsigned long)h);
 }

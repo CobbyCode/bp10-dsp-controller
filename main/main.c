@@ -204,22 +204,45 @@ static void dsp_boot_apply_task(void *arg)
     const mvs_device_profile_t *device = dsp_model_get_device_profile();
     if (!device->valid) return;
     if (device->kind == MVS_DEVICE_GENERIC_ACP) {
-        ESP_LOGI(TAG, "Generic ACP: read-only reconnect initialization; A800X NVS ignored");
+        if (device->fingerprint_valid) {
+            dsp_profile_t saved;
+            esp_err_t gerr = nvs_settings_load_generic_config(
+                &device->schema_fingerprint, &saved);
+            if (gerr == ESP_OK) {
+                ESP_LOGI(TAG, "Generic ACP: Fingerprint-Match – wende gespeicherte Konfiguration an");
+                esp_err_t apply_err = dsp_model_apply_profile(&saved);
+                if (apply_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Generic ACP: Restore fehlgeschlagen: %s",
+                             esp_err_to_name(apply_err));
+                    return;
+                }
+                dsp_model_commit_profile(&saved);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                // Kurzer Readback zur Bestätigung
+                dsp_profile_t rb;
+                if (dsp_model_readback(&rb) == ESP_OK) {
+                    g_dsp_ns_state = rb.noise_suppressor_enabled;
+                }
+                return;
+            }
+            ESP_LOGI(TAG, "Generic ACP: Kein Fingerprint-Match – read-only");
+        } else {
+            ESP_LOGI(TAG, "Generic ACP: Kein Fingerprint – read-only");
+        }
         dsp_boot_readonly_task(NULL);
         return;
     }
 
-    // Prüfen ob eine gespeicherte Konfiguration existiert
-    if (!nvs_settings_has_dsp_config()) {
+    // A800X: neuer NVS-Key "dsp_a800x" (Legacy wurde in nvs_settings_init migriert)
+    if (!nvs_settings_has_a800x_config()) {
         ESP_LOGI(TAG, "Keine gespeicherte DSP-Konfiguration – "
                        "lese aktuellen Zustand (nur Readback, kein Save)");
         dsp_boot_readonly_task(NULL);
         return;
     }
 
-    // --- Gespeicherte Konfiguration laden ---
     dsp_profile_t saved;
-    esp_err_t err = nvs_settings_load_dsp_config(&saved);
+    esp_err_t err = nvs_settings_load_a800x_config(&saved);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS-Konfiguration laden fehlgeschlagen: %s – "
                        "falle zurück auf Readback", esp_err_to_name(err));
@@ -235,6 +258,7 @@ static void dsp_boot_apply_task(void *arg)
         ESP_LOGE(TAG, "Profil anwenden fehlgeschlagen: %s", esp_err_to_name(err));
         return;
     }
+    dsp_model_commit_profile(&saved);
 
     vTaskDelay(pdMS_TO_TICKS(200));
 
@@ -331,6 +355,13 @@ static void dsp_boot_readonly_task(void *arg)
         ESP_LOGE(TAG, "Readback (readonly) fehlgeschlagen: %s", esp_err_to_name(err));
         return;
     }
+
+    // Bewusste Initialübernahme des DSP-Live-Zustands als Runtime-Profil,
+    // wenn kein gespeichertes Profil angewendet wird. Kein NVS-Save:
+    // der Read-only-Boot spiegelt nur, was das Gerät tatsächlich hat,
+    // damit GET /api/dsp nach erstem Start / Generic Factory Reset den
+    // realen Live-Zustand liefert statt eines leeren Profils.
+    dsp_model_commit_profile(&profile);
 
     g_dsp_ns_state = profile.noise_suppressor_enabled;
     ESP_LOGI(TAG, "DSP-Zustand gelesen (kein Auto-Save): Noise Suppressor=%s, "

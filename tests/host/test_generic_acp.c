@@ -73,6 +73,12 @@ static void test_catalog(void)
     assert(mvs_device_profile_map_catalog_entry(&p, 6, 13, "Music Virtual Bass"));
     assert(mvs_device_profile_map_catalog_entry(&p, 15, 2, "Music DRC"));
     assert(mvs_device_profile_map_catalog_entry(&p, 17, 4, "Music Pre EQ"));
+    // VB Classic: Phase 1 Mapping (eff_type 13, anderer Name als VB)
+    assert(mvs_device_profile_map_catalog_entry(&p, 7, 13, "Music Virtual Bass Classic"));
+    assert(p.virtual_bass_classic.effect_id == 0x87);
+    assert(mvs_device_profile_map_catalog_entry(&p, 11, 24, "Music Delay"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 14, 20, "Music Phase"));
+    // Doppelter Aufruf für gleichen Index liefert false (Slot bereits belegt)
     assert(!mvs_device_profile_map_catalog_entry(&p, 7, 13, "Music Virtual Bass Classic"));
     assert(p.noise_suppressor.effect_id == 0x81 && p.virtual_bass.effect_id == 0x86 &&
            p.drc.effect_id == 0x8F && p.preeq.effect_id == 0x91);
@@ -80,9 +86,24 @@ static void test_catalog(void)
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_VIRTUAL_BASS, true, 8);
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_DRC, true, 38);
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_PREEQ, true, 106);
+    mvs_device_profile_set_module_validated(&p, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 6);
+    mvs_device_profile_set_module_validated(&p, MVS_MODULE_DELAY_HQ, true, 8);
+    mvs_device_profile_set_module_validated(&p, MVS_MODULE_PHASE, true, 4);
     assert(p.valid && p.drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
            p.preeq_schema == MVS_PEQ_SCHEMA_CLASSIC_10BAND &&
            !p.silence_detector.available);
+    assert(p.has_virtual_bass_classic && p.has_phase && p.has_delay_hq);
+    assert(p.virtual_bass_classic.state_size == 6 && p.phase.state_size == 4 &&
+           p.delay_hq.state_size == 8);
+
+    uint8_t phase_wire[] = {1,0,1,0};
+    bool inverted = false;
+    assert(mvs_decode_phase(phase_wire, sizeof(phase_wire), &inverted) == ESP_OK && inverted);
+    uint8_t delay_wire[] = {1,0,25,0,25,0,1,0};
+    bool delay_enabled = false, hq = false; uint16_t delay_ms = 0;
+    assert(mvs_decode_delay(delay_wire, sizeof(delay_wire), &delay_enabled,
+                            &delay_ms, &hq) == ESP_OK);
+    assert(delay_enabled && delay_ms == 25 && hq);
 }
 
 static void test_preeq_and_a800x_regression(void)
@@ -166,12 +187,45 @@ static void test_classic_drc(void)
     assert(memcmp(frame, expected_threshold, sizeof(expected_threshold)) == 0);
 }
 
+static void test_schema_fingerprint_ignores_addresses(void)
+{
+    mvs_device_profile_t a, b;
+    mvs_device_profile_begin_generic(&a, 0x8888, 0x1719, 4, 20);
+    mvs_device_profile_begin_generic(&b, 0x8888, 0x1719, 4, 20);
+    assert(!a.fingerprint_valid && !b.fingerprint_valid);
+    a.noise_suppressor=(mvs_effect_ref_t){.available=true,.effect_id=0x81,.effect_type=5};
+    a.virtual_bass=(mvs_effect_ref_t){.available=true,.effect_id=0x86,.effect_type=13};
+    b.noise_suppressor=(mvs_effect_ref_t){.available=true,.effect_id=0x91,.effect_type=5};
+    b.virtual_bass=(mvs_effect_ref_t){.available=true,.effect_id=0xA6,.effect_type=13};
+    mvs_device_profile_compute_fingerprint(&a);
+    mvs_device_profile_compute_fingerprint(&b);
+    assert(a.fingerprint_valid && b.fingerprint_valid);
+    assert(mvs_fingerprint_equal(&a.schema_fingerprint,&b.schema_fingerprint));
+    char ka[12], kb[12];
+    mvs_fingerprint_to_nvs_key(&a.schema_fingerprint,ka,sizeof(ka));
+    mvs_fingerprint_to_nvs_key(&b.schema_fingerprint,kb,sizeof(kb));
+    assert(strcmp(ka,kb)==0);
+}
+
+static void test_runtime_frames_never_use_flash_commands(void)
+{
+    uint8_t frame[112];
+    mvs_preeq_state_t peq={0};
+    assert(mvs_build_preeq_full_frame_dyn(0x91,&peq,frame,sizeof(frame))==ESP_OK);
+    assert(frame[2]!=MVS_EFFECT_TAG && frame[2]!=MVS_EFFECT_SAVE);
+    mvs_drc_packed_state_t drc={0};
+    assert(mvs_build_drc_a800x_full_frame(0x9A,&drc,frame,sizeof(frame))==ESP_OK);
+    assert(frame[2]!=MVS_EFFECT_TAG && frame[2]!=MVS_EFFECT_SAVE);
+}
+
 int main(void)
 {
     test_transport_profiles();
     test_catalog();
     test_preeq_and_a800x_regression();
     test_classic_drc();
+    test_schema_fingerprint_ignores_addresses();
+    test_runtime_frames_never_use_flash_commands();
     puts("generic_acp_host_tests: PASS");
     return 0;
 }

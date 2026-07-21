@@ -43,12 +43,33 @@
   let preeqBaseline = null;
   let activeCapabilities = {};
   let activePreeqSchema = 'none';
+  let activeDeviceProfile = 'unknown';
+
+  const factoryValueButtonIds = [
+    'btn-noise-read', 'btn-bass-read', 'btn-silence-read',
+    'btn-preeq-read', 'btn-drc-reset',
+    'btn-vb-classic-read', 'btn-phase-read'
+  ];
+
+  function hasA800xFactoryDefaults() {
+    return activeDeviceProfile === 'a800x_fixed';
+  }
+
+  function updateFactoryValueActions() {
+    const available = hasA800xFactoryDefaults();
+    factoryValueButtonIds.forEach(id => {
+      const button = $(id);
+      button.classList.toggle('hidden', !available);
+      if (!available) button.disabled = true;
+    });
+  }
 
   function toggleModule(id, available) {
     const module = $(id);
     if (module) module.classList.toggle('hidden', available !== true);
   }
-  const factoryPreeqFilters = [
+  // Known fixed A800X values only; Generic ACP has no universal defaults.
+  const a800xFactoryPreeqFilters = [
     null, // F0 gehört zum rückseitigen Crossover und wird immer erhalten.
     { enabled:true,  type:3, frequency_hz:500,   q:0.707, gain_db:0 },
     { enabled:true,  type:4, frequency_hz:35,    q:0.800, gain_db:0 },
@@ -119,9 +140,14 @@
         // Controls remain hidden until /dsp has returned confirmed hardware
         // values. Showing unchecked HTML defaults here causes OFF -> ON jumps.
         activeCapabilities = data.capabilities || {};
+        activeDeviceProfile = data.device && data.device.profile || 'unknown';
         activePreeqSchema = activeCapabilities.preeq_schema || 'none';
+        updateFactoryValueActions();
         toggleModule('noise-module', activeCapabilities.noise_suppressor);
         toggleModule('bass-module', activeCapabilities.virtual_bass);
+        toggleModule('vb-classic-module', activeCapabilities.virtual_bass_classic);
+        toggleModule('phase-module', activeCapabilities.music_phase);
+        toggleModule('delay-module', activeCapabilities.music_delay);
         toggleModule('silence-module', activeCapabilities.silence_detector);
         toggleModule('preeq-module', activeCapabilities.preeq);
         toggleModule('drc-module', activeCapabilities.drc);
@@ -130,6 +156,8 @@
         $('btn-dsp-export').disabled = !normalizedPersistence;
         $('btn-dsp-import').disabled = !normalizedPersistence;
       } else {
+        activeDeviceProfile = 'unknown';
+        updateFactoryValueActions();
         dspStatus.textContent = 'DSP ✗';
         dspStatus.className = 'status-dot dot-off';
         dspSection.classList.add('hidden');
@@ -364,6 +392,12 @@
       }
       if (data.drc && data.drc.valid === true) setDrcForm(data.drc);
       else resetDrcUnread();
+      if (data.virtual_bass_classic && data.virtual_bass_classic.valid)
+        setVbClassicForm(data.virtual_bass_classic);
+      if (data.music_phase && data.music_phase.valid)
+        setPhaseForm(data.music_phase);
+      if (data.music_delay && data.music_delay.valid)
+        setDelayForm(data.music_delay);
     } catch (e) {
       console.error('DSP state update failed:', e);
     }
@@ -379,6 +413,113 @@
     bassEditor.classList.remove('is-dirty');
   }
 
+  async function applyWithReadback(apiPath, payload, opts) {
+    const { button, message, state, editor, formSetter } = opts;
+    button.disabled = true;
+    message.textContent = 'Writing and verifying…';
+    try {
+      const result = await api('POST', apiPath, payload);
+      if (result.status !== 'ok' || !result.data || !result.data.confirmed) {
+        throw new Error(result.error || 'Readback mismatch');
+      }
+      formSetter(result.data);
+      editor.classList.remove('is-dirty');
+      message.textContent = 'Change confirmed by readback';
+      message.className = 'form-message is-success';
+    } catch (error) {
+      state.textContent = 'MISMATCH';
+      state.className = 'module-state is-error';
+      message.textContent = error.message;
+      message.className = 'form-message is-error';
+    } finally { button.disabled = false; }
+  }
+
+  function setVbClassicForm(data) {
+    $('vb-classic-enable').checked = data.enabled === true;
+    $('vb-classic-cutoff').value = data.cutoff_hz;
+    $('vb-classic-intensity').value = data.intensity_pct;
+    $('vb-classic-state').textContent = (data.enabled ? 'ON' : 'OFF') + ' · CONFIRMED';
+    $('vb-classic-state').className = 'module-state ' + (data.enabled ? 'is-on' : '');
+  }
+  ['vb-classic-enable','vb-classic-cutoff','vb-classic-intensity']
+    .forEach(id => $(id).addEventListener('input', () => {
+      $('vb-classic-module').querySelector('.module-editor').classList.add('is-dirty');
+      $('vb-classic-message').textContent = 'Unapplied changes';
+      $('vb-classic-message').className = 'form-message';
+    }));
+  $('btn-vb-classic-read').addEventListener('click', () => {
+    if (!hasA800xFactoryDefaults()) return;
+    $('vb-classic-enable').checked = false;
+    $('vb-classic-cutoff').value = 100;
+    $('vb-classic-intensity').value = 35;
+    $('vb-classic-module').querySelector('.module-editor').classList.add('is-dirty');
+    $('vb-classic-message').textContent = 'Factory values loaded locally · Apply to write';
+    $('vb-classic-message').className = 'form-message';
+  });
+  $('btn-vb-classic-apply').addEventListener('click', () => applyWithReadback('/dsp/vb-classic', {
+    enable: $('vb-classic-enable').checked,
+    cutoff_hz: Number($('vb-classic-cutoff').value),
+    intensity_pct: Number($('vb-classic-intensity').value)
+  }, {
+    button: $('btn-vb-classic-apply'),
+    message: $('vb-classic-message'),
+    state: $('vb-classic-state'),
+    editor: $('vb-classic-module').querySelector('.module-editor'),
+    formSetter: setVbClassicForm
+  }));
+
+  function setPhaseForm(data) {
+    $('phase-invert').checked = data.inverted === true;
+    $('phase-state').textContent = (data.inverted ? 'INVERTED' : 'NORMAL') + ' · CONFIRMED';
+    $('phase-state').className = 'module-state ' + (data.inverted ? 'is-on' : '');
+  }
+  $('phase-invert').addEventListener('input', () => {
+    $('phase-module').querySelector('.module-editor').classList.add('is-dirty');
+    $('phase-message').textContent = 'Unapplied change';
+    $('phase-message').className = 'form-message';
+  });
+  $('btn-phase-read').addEventListener('click', () => {
+    if (!hasA800xFactoryDefaults()) return;
+    $('phase-invert').checked = true;
+    $('phase-module').querySelector('.module-editor').classList.add('is-dirty');
+    $('phase-message').textContent = 'Factory values loaded locally · Apply to write';
+    $('phase-message').className = 'form-message';
+  });
+  $('btn-phase-apply').addEventListener('click', () => applyWithReadback('/dsp/phase', {
+    invert: $('phase-invert').checked
+  }, {
+    button: $('btn-phase-apply'),
+    message: $('phase-message'),
+    state: $('phase-state'),
+    editor: $('phase-module').querySelector('.module-editor'),
+    formSetter: setPhaseForm
+  }));
+
+  function setDelayForm(data) {
+    $('delay-enable').checked = data.enabled === true;
+    $('delay-ms').value = data.delay_ms;
+    $('delay-hq').checked = data.hq_enabled === true;
+    $('delay-state').textContent = (data.enabled ? 'ON' : 'OFF') + ' · CONFIRMED';
+    $('delay-state').className = 'module-state ' + (data.enabled ? 'is-on' : '');
+  }
+  ['delay-enable','delay-ms','delay-hq']
+    .forEach(id => $(id).addEventListener('input', () => {
+      $('delay-module').querySelector('.module-editor').classList.add('is-dirty');
+      $('delay-message').textContent = 'Unapplied changes';
+      $('delay-message').className = 'form-message';
+    }));
+  $('btn-delay-apply').addEventListener('click', () => applyWithReadback('/dsp/delay', {
+    enable: $('delay-enable').checked,
+    delay_ms: Number($('delay-ms').value),
+    hq_enabled: $('delay-hq').checked
+  }, {
+    button: $('btn-delay-apply'),
+    message: $('delay-message'),
+    state: $('delay-state'),
+    editor: $('delay-module').querySelector('.module-editor'),
+    formSetter: setDelayForm
+  }));
+
   ['virtual-bass', 'bass-cutoff', 'bass-intensity', 'bass-enhanced']
     .forEach(id => $(id).addEventListener('input', () => {
       bassEditor.classList.add('is-dirty');
@@ -387,6 +528,7 @@
     }));
 
   $('btn-bass-read').addEventListener('click', async () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('virtual-bass').checked = true;
     $('bass-cutoff').value = 42;
     $('bass-intensity').value = 4;
@@ -448,7 +590,7 @@
     $('drc-release').value = data.release_ms;
     ['drc-enable','drc-pregain','drc-threshold','drc-ratio','drc-attack','drc-release']
       .forEach(id => $(id).disabled = !fullBandSupported);
-    $('btn-drc-reset').disabled = !fullBandSupported;
+    $('btn-drc-reset').disabled = !fullBandSupported || !hasA800xFactoryDefaults();
     $('btn-drc-apply').disabled = !fullBandSupported;
     drcState.textContent = fullBandSupported
       ? (data.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED')
@@ -480,6 +622,7 @@
     }));
 
   $('btn-drc-reset').addEventListener('click', () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('drc-enable').checked = true;
     $('drc-pregain').value = '2.00';
     $('drc-threshold').value = '-5.00';
@@ -522,7 +665,7 @@
     $('silence-detector').checked = enabled === true;
     $('silence-detector').disabled = false;
     $('btn-silence-apply').disabled = false;
-    $('btn-silence-read').disabled = false;
+    $('btn-silence-read').disabled = !hasA800xFactoryDefaults();
     silenceState.textContent = enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED';
     silenceState.className = 'module-state ' + (enabled ? 'is-on' : '');
     silenceEditor.classList.remove('is-dirty');
@@ -545,6 +688,7 @@
   });
 
   $('btn-silence-read').addEventListener('click', async () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('silence-detector').checked = true;
     silenceEditor.classList.add('is-dirty');
     silenceMessage.textContent = 'Factory value ON loaded locally · Apply to write';
@@ -609,7 +753,7 @@
         </div>
       </div>`).join('');
     $('btn-preeq-apply').disabled = false;
-    $('btn-preeq-read').disabled = false;
+    $('btn-preeq-read').disabled = !hasA800xFactoryDefaults();
     preeqState.textContent = preeqBaseline.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED';
     preeqState.className = 'module-state ' + (preeqBaseline.enabled ? 'is-on' : '');
     preeqEditor.classList.remove('is-dirty');
@@ -725,12 +869,12 @@
   }
 
   $('btn-preeq-read').addEventListener('click', async () => {
-    if (!preeqBaseline) return;
+    if (!preeqBaseline || !hasA800xFactoryDefaults()) return;
     const reset = {
       enabled: true,
       pregain_db: 0,
       filters: preeqBaseline.filters.map((filter, index) =>
-        index === 0 ? { ...filter } : { ...factoryPreeqFilters[index] })
+        index === 0 ? { ...filter } : { ...a800xFactoryPreeqFilters[index] })
     };
     $('preeq-enable').checked = reset.enabled;
     $('preeq-pregain').value = reset.pregain_db.toFixed(2);
@@ -766,6 +910,7 @@
     }));
 
   $('btn-noise-read').addEventListener('click', async () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('noise-suppressor').checked = true;
     $('noise-threshold').value = '-55.00';
     $('noise-ratio').value = 4;

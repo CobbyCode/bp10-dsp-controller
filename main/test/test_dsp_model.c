@@ -18,10 +18,18 @@
 // DSP-Modell Tests
 // ---------------------------------------------------------------------------
 
+static void select_a800x_profile(void)
+{
+    mvs_device_profile_t device;
+    mvs_device_profile_set_a800x(&device);
+    dsp_model_set_device_profile(&device);
+}
+
 TEST_CASE("Default profile values", "[dsp_model]")
 {
     dsp_profile_t profile;
-    dsp_model_get_default_profile(&profile);
+    select_a800x_profile();
+    TEST_ASSERT_TRUE(dsp_model_get_default_profile(&profile));
 
     // Noise Suppressor: Factory Defaults
     TEST_ASSERT_TRUE(profile.noise_suppressor_enabled);
@@ -52,7 +60,8 @@ TEST_CASE("Default profile values", "[dsp_model]")
 TEST_CASE("DRC factory defaults", "[dsp_model]")
 {
     dsp_profile_t profile;
-    dsp_model_get_default_profile(&profile);
+    select_a800x_profile();
+    TEST_ASSERT_TRUE(dsp_model_get_default_profile(&profile));
 
     // Full Band mode
     TEST_ASSERT_TRUE(profile.drc.enabled);
@@ -72,7 +81,8 @@ TEST_CASE("DRC factory defaults", "[dsp_model]")
 TEST_CASE("PreEQ filter types", "[dsp_model]")
 {
     dsp_profile_t profile;
-    dsp_model_get_default_profile(&profile);
+    select_a800x_profile();
+    TEST_ASSERT_TRUE(dsp_model_get_default_profile(&profile));
 
     // Verify all filter types
     TEST_ASSERT_EQUAL(MVS_FILTER_LP, profile.preeq.filters[0].type);  // F0: LP
@@ -80,6 +90,20 @@ TEST_CASE("PreEQ filter types", "[dsp_model]")
     TEST_ASSERT_EQUAL(MVS_FILTER_HP, profile.preeq.filters[2].type);  // F2: HP
     TEST_ASSERT_EQUAL(MVS_FILTER_PK, profile.preeq.filters[3].type);  // F3: PK
     TEST_ASSERT_EQUAL(MVS_FILTER_PK, profile.preeq.filters[4].type);  // F4: PK
+}
+
+TEST_CASE("Generic profile has no factory defaults", "[dsp_model]")
+{
+    mvs_device_profile_t device;
+    dsp_profile_t profile;
+    memset(&profile, 0xA5, sizeof(profile));
+    mvs_device_profile_begin_generic(&device, 0x1234, 0x5678, 0, 0);
+    dsp_model_set_device_profile(&device);
+
+    TEST_ASSERT_FALSE(dsp_model_get_default_profile(&profile));
+
+    dsp_profile_t zero = {0};
+    TEST_ASSERT_EQUAL_MEMORY(&zero, &profile, sizeof(profile));
 }
 
 // ---------------------------------------------------------------------------

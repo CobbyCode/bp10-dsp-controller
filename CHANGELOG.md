@@ -1,7 +1,27 @@
 # Changelog
 
+## 0.4.1 - 2026-07-21
+
+- Enable Generic-Persistence (fingerprint-bound ESP-NVS) for non-A800X
+  profiles so DSP state is restored after power cycles.
+- Fix Generic factory defaults isolation: a Factory Reset on Generic
+  hardware clears controller-side persistence and runs read-only DSP
+  discovery instead of writing stale A800X default values.
+- Add Virtual Bass Classic (type 23) support for the Generic Classic
+  profile with correct 6-byte wire encoding.
+- Add capability-gated Music Phase and Music Delay/HQ controls with
+  immediate readback, shared apply-with-readback helper, and UI cards
+  styled to match existing DSP control cards.
+
 ## 0.4.0 - 2026-07-19
 
+- Add capability-gated Generic Virtual Bass Classic, Music Phase, and Music
+  Delay/HQ controls with immediate readback, simple UI cards, and backward-safe
+  fingerprint-bound ESP-NVS persistence; fixed A800X mappings remain unchanged.
+- Scope factory defaults to the fixed A800X profile. Generic Factory Reset now
+  clears controller persistence and performs read-only discovery/readback when
+  no matching fingerprint profile exists; Generic factory-value UI actions are
+  unavailable.
 - Add a constrained `generic_acp_classic` profile for the confirmed
   `0x8888:0x1719` transport, with catalog-discovered Noise Suppressor, Virtual
   Bass, PreEQ, and Full-Band Music DRC support.

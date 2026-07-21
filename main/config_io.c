@@ -37,7 +37,7 @@ esp_err_t config_io_export(char **json)
 
     // DSP-Konfiguration aus NVS laden
     dsp_profile_t config;
-    esp_err_t err = nvs_settings_load_dsp_config(&config);
+    esp_err_t err = nvs_settings_load_a800x_config(&config);
     if (err == ESP_OK) {
         cJSON *dsp = cJSON_AddObjectToObject(root, "dsp");
 
@@ -194,7 +194,11 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
         return ESP_ERR_INVALID_ARG;
     }
 
-    dsp_model_get_default_profile(profile);
+    if (!dsp_model_get_default_profile(profile)) {
+        cJSON_Delete(root);
+        ESP_LOGE(TAG, "Import: Keine Factory-Basis für aktives Geräteprofil");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     // Noise Suppressor
     cJSON *ns = cJSON_GetObjectItem(dsp, "noise_suppressor");
