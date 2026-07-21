@@ -81,14 +81,14 @@ static void test_catalog(void)
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_VIRTUAL_BASS, true, 8);
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_DRC, true, 38);
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_PREEQ, true, 106);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 8);
+    mvs_device_profile_set_module_validated(&p, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 6);
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_DELAY_HQ, true, 8);
     mvs_device_profile_set_module_validated(&p, MVS_MODULE_PHASE, true, 4);
     assert(p.valid && p.drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
            p.preeq_schema == MVS_PEQ_SCHEMA_CLASSIC_10BAND &&
            !p.silence_detector.available);
     assert(p.has_virtual_bass_classic && p.has_phase && p.has_delay_hq);
-    assert(p.virtual_bass_classic.state_size == 8 && p.phase.state_size == 4 &&
+    assert(p.virtual_bass_classic.state_size == 6 && p.phase.state_size == 4 &&
            p.delay_hq.state_size == 8);
 
     uint8_t phase_wire[] = {1,0,1,0};
