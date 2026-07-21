@@ -181,6 +181,7 @@ static esp_err_t handler_status_get(httpd_req_t *req)
         "classic_3band" : "none");
     cJSON_AddNumberToObject(caps, "drc_ratio_step",
         device_profile->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ? 1.0 : 0.01);
+    cJSON_AddBoolToObject(caps, "factory_defaults", a800x);
 
     // MAC
     char mac[18];
@@ -1124,7 +1125,23 @@ static esp_err_t handler_device_name_post(httpd_req_t *req)
 static esp_err_t handler_device_reset_post(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Factory Reset – NVS löschen (kein DSP-Flash-Save)");
-    nvs_settings_factory_reset();
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    bool restore_a800x_defaults = device->valid &&
+        device->kind == MVS_DEVICE_A800X_FIXED;
+    esp_err_t err = nvs_settings_factory_reset();
+    if (err != ESP_OK) {
+        return send_error(req, 500, "Unable to clear NVS");
+    }
+    if (restore_a800x_defaults) {
+        dsp_profile_t defaults;
+        if (!dsp_model_get_default_profile(&defaults) ||
+            nvs_settings_save_a800x_config(&defaults) != ESP_OK) {
+            return send_error(req, 500, "Unable to stage A800X factory defaults");
+        }
+        ESP_LOGI(TAG, "A800X Factory-Defaults für Reconnect vorgemerkt");
+    } else {
+        ESP_LOGI(TAG, "Generic Factory Reset: keine DSP-Defaults, Reconnect bleibt read-only");
+    }
     // Kein 0xFD an den DSP senden!
     wifi_manager_deinit();
     mdns_service_stop();

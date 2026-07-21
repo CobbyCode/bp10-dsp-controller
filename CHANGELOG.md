@@ -2,6 +2,10 @@
 
 ## 0.4.0 - 2026-07-19
 
+- Scope factory defaults to the fixed A800X profile. Generic Factory Reset now
+  clears controller persistence and performs read-only discovery/readback when
+  no matching fingerprint profile exists; Generic factory-value UI actions are
+  unavailable.
 - Add a constrained `generic_acp_classic` profile for the confirmed
   `0x8888:0x1719` transport, with catalog-discovered Noise Suppressor, Virtual
   Bass, PreEQ, and Full-Band Music DRC support.

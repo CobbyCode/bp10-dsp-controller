@@ -108,9 +108,13 @@ const mvs_device_profile_t *dsp_model_get_device_profile(void);
 /**
  * @brief Standard-Profil zurückgeben.
  *
- * @param[out] profile Ausgabe-Profil
+ * Factory defaults are defined only for the fixed A800X profile. Generic ACP
+ * devices deliberately have no synthesized defaults.
+ *
+ * @param[out] profile Ausgabe-Profil (always cleared first)
+ * @return true when A800X defaults were returned, false otherwise
  */
-void dsp_model_get_default_profile(dsp_profile_t *profile);
+bool dsp_model_get_default_profile(dsp_profile_t *profile);
 
 /**
  * @brief Ein Profil auf den DSP anwenden (via USB-HID).

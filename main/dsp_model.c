@@ -137,13 +137,20 @@ esp_err_t dsp_model_init(void)
 {
     memset(&s_current_profile, 0, sizeof(s_current_profile));
     memset(&s_device_profile, 0, sizeof(s_device_profile));
-    dsp_model_get_default_profile(&s_current_profile);
     return ESP_OK;
 }
 
-void dsp_model_get_default_profile(dsp_profile_t *profile)
+bool dsp_model_get_default_profile(dsp_profile_t *profile)
 {
+    if (!profile) return false;
     memset(profile, 0, sizeof(dsp_profile_t));
+
+    if (!s_device_profile.valid ||
+        s_device_profile.kind != MVS_DEVICE_A800X_FIXED) {
+        ESP_LOGW(TAG, "Keine Factory-Defaults für Geräteprofil %d",
+                 s_device_profile.kind);
+        return false;
+    }
 
     // Factory defaults derived from the AIYIMA A800X BP1048B2 implementation.
 
@@ -234,6 +241,8 @@ void dsp_model_get_default_profile(dsp_profile_t *profile)
     profile->drc.attacks[3] = 2;
     profile->drc.releases[3] = 800;
     profile->drc.pregains[3] = 5157;       // ~+2 dB
+
+    return true;
 }
 
 // ---------------------------------------------------------------------------

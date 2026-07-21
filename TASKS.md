@@ -30,11 +30,15 @@ Keep the AIYIMA A800X path protocol-compatible while adding a constrained
 - [x] Complete A800X hardware acceptance over Serial, API, Web UI, boot restore,
   and native USB hot reconnect. Generic ACP physical acceptance remains pending
   the NVarcher hardware test.
+- [x] Fix the Generic defaults leak, verify the NVarcher Factory Reset as a
+  zero-write readback, retain the unchanged A800X frame/default regression, and
+  pass host tests plus the ESP32-S3 Mini build.
 
 ## Current step
 
-Create the approved local 0.4.0 commit after the final clean gate. Do not push,
-tag, or create a release.
+Generic-defaults fix complete locally. Resume Phase 2 only after explicit
+direction. The additional installed-controller A800X OTA hardware test is
+deferred; do not push, tag, or release.
 
 ## Baseline
 

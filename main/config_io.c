@@ -194,7 +194,11 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
         return ESP_ERR_INVALID_ARG;
     }
 
-    dsp_model_get_default_profile(profile);
+    if (!dsp_model_get_default_profile(profile)) {
+        cJSON_Delete(root);
+        ESP_LOGE(TAG, "Import: Keine Factory-Basis für aktives Geräteprofil");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     // Noise Suppressor
     cJSON *ns = cJSON_GetObjectItem(dsp, "noise_suppressor");

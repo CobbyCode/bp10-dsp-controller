@@ -38,12 +38,32 @@
   let preeqBaseline = null;
   let activeCapabilities = {};
   let activePreeqSchema = 'none';
+  let activeDeviceProfile = 'unknown';
+
+  const factoryValueButtonIds = [
+    'btn-noise-read', 'btn-bass-read', 'btn-silence-read',
+    'btn-preeq-read', 'btn-drc-reset'
+  ];
+
+  function hasA800xFactoryDefaults() {
+    return activeDeviceProfile === 'a800x_fixed';
+  }
+
+  function updateFactoryValueActions() {
+    const available = hasA800xFactoryDefaults();
+    factoryValueButtonIds.forEach(id => {
+      const button = $(id);
+      button.classList.toggle('hidden', !available);
+      if (!available) button.disabled = true;
+    });
+  }
 
   function toggleModule(id, available) {
     const module = $(id);
     if (module) module.classList.toggle('hidden', available !== true);
   }
-  const factoryPreeqFilters = [
+  // Known fixed A800X values only; Generic ACP has no universal defaults.
+  const a800xFactoryPreeqFilters = [
     null, // F0 gehört zum rückseitigen Crossover und wird immer erhalten.
     { enabled:true,  type:3, frequency_hz:500,   q:0.707, gain_db:0 },
     { enabled:true,  type:4, frequency_hz:35,    q:0.800, gain_db:0 },
@@ -114,7 +134,9 @@
         // Controls remain hidden until /dsp has returned confirmed hardware
         // values. Showing unchecked HTML defaults here causes OFF -> ON jumps.
         activeCapabilities = data.capabilities || {};
+        activeDeviceProfile = data.device && data.device.profile || 'unknown';
         activePreeqSchema = activeCapabilities.preeq_schema || 'none';
+        updateFactoryValueActions();
         toggleModule('noise-module', activeCapabilities.noise_suppressor);
         toggleModule('bass-module', activeCapabilities.virtual_bass);
         toggleModule('silence-module', activeCapabilities.silence_detector);
@@ -125,6 +147,8 @@
         $('btn-dsp-export').disabled = !normalizedPersistence;
         $('btn-dsp-import').disabled = !normalizedPersistence;
       } else {
+        activeDeviceProfile = 'unknown';
+        updateFactoryValueActions();
         dspStatus.textContent = 'DSP ✗';
         dspStatus.className = 'status-dot dot-off';
         dspSection.classList.add('hidden');
@@ -382,6 +406,7 @@
     }));
 
   $('btn-bass-read').addEventListener('click', async () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('virtual-bass').checked = true;
     $('bass-cutoff').value = 42;
     $('bass-intensity').value = 4;
@@ -443,7 +468,7 @@
     $('drc-release').value = data.release_ms;
     ['drc-enable','drc-pregain','drc-threshold','drc-ratio','drc-attack','drc-release']
       .forEach(id => $(id).disabled = !fullBandSupported);
-    $('btn-drc-reset').disabled = !fullBandSupported;
+    $('btn-drc-reset').disabled = !fullBandSupported || !hasA800xFactoryDefaults();
     $('btn-drc-apply').disabled = !fullBandSupported;
     drcState.textContent = fullBandSupported
       ? (data.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED')
@@ -475,6 +500,7 @@
     }));
 
   $('btn-drc-reset').addEventListener('click', () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('drc-enable').checked = true;
     $('drc-pregain').value = '2.00';
     $('drc-threshold').value = '-5.00';
@@ -517,7 +543,7 @@
     $('silence-detector').checked = enabled === true;
     $('silence-detector').disabled = false;
     $('btn-silence-apply').disabled = false;
-    $('btn-silence-read').disabled = false;
+    $('btn-silence-read').disabled = !hasA800xFactoryDefaults();
     silenceState.textContent = enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED';
     silenceState.className = 'module-state ' + (enabled ? 'is-on' : '');
     silenceEditor.classList.remove('is-dirty');
@@ -540,6 +566,7 @@
   });
 
   $('btn-silence-read').addEventListener('click', async () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('silence-detector').checked = true;
     silenceEditor.classList.add('is-dirty');
     silenceMessage.textContent = 'Factory value ON loaded locally · Apply to write';
@@ -604,7 +631,7 @@
         </div>
       </div>`).join('');
     $('btn-preeq-apply').disabled = false;
-    $('btn-preeq-read').disabled = false;
+    $('btn-preeq-read').disabled = !hasA800xFactoryDefaults();
     preeqState.textContent = preeqBaseline.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED';
     preeqState.className = 'module-state ' + (preeqBaseline.enabled ? 'is-on' : '');
     preeqEditor.classList.remove('is-dirty');
@@ -720,12 +747,12 @@
   }
 
   $('btn-preeq-read').addEventListener('click', async () => {
-    if (!preeqBaseline) return;
+    if (!preeqBaseline || !hasA800xFactoryDefaults()) return;
     const reset = {
       enabled: true,
       pregain_db: 0,
       filters: preeqBaseline.filters.map((filter, index) =>
-        index === 0 ? { ...filter } : { ...factoryPreeqFilters[index] })
+        index === 0 ? { ...filter } : { ...a800xFactoryPreeqFilters[index] })
     };
     $('preeq-enable').checked = reset.enabled;
     $('preeq-pregain').value = reset.pregain_db.toFixed(2);
@@ -761,6 +788,7 @@
     }));
 
   $('btn-noise-read').addEventListener('click', async () => {
+    if (!hasA800xFactoryDefaults()) return;
     $('noise-suppressor').checked = true;
     $('noise-threshold').value = '-55.00';
     $('noise-ratio').value = 4;
