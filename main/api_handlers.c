@@ -52,15 +52,6 @@ static bool profile_supports_config_io(void)
              profile->fingerprint_valid));
 }
 
-static bool profile_has_auto_persistence(void)
-{
-    const mvs_device_profile_t *profile = dsp_model_get_device_profile();
-    return profile->valid &&
-           (profile->kind == MVS_DEVICE_A800X_FIXED ||
-            (profile->kind == MVS_DEVICE_GENERIC_ACP &&
-             profile->fingerprint_valid));
-}
-
 // ---------------------------------------------------------------------------
 // Hilfsfunktionen
 // ---------------------------------------------------------------------------

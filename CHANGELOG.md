@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.2 - 2026-07-22
+## 0.4.3 - 2026-07-22
 
 - Add one versioned JSON configuration format for the AIYIMA A800X and
   matching Generic ACP devices.
