@@ -19,4 +19,14 @@ cc -std=c11 -Wall -Wextra -Werror \
   "$repo_dir/main/mvs_device_profile.c" \
   -o "$out_dir/nvs_settings_host_tests"
 "$out_dir/nvs_settings_host_tests"
+cc -std=c11 -Wall -Wextra -Werror \
+  -DAPP_VERSION='"host-test"' \
+  -I"$repo_dir/tests/host/include" -I"$repo_dir/main" \
+  -I"$repo_dir/managed_components/espressif__cjson/cJSON" \
+  "$repo_dir/tests/host/test_config_io.c" \
+  "$repo_dir/main/config_io.c" \
+  "$repo_dir/main/mvs_device_profile.c" \
+  "$repo_dir/managed_components/espressif__cjson/cJSON/cJSON.c" \
+  -lm -o "$out_dir/config_io_host_tests"
+"$out_dir/config_io_host_tests"
 "$repo_dir/tests/host/compare_a800x_baseline.sh"

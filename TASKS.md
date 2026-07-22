@@ -36,11 +36,15 @@ Keep the AIYIMA A800X path protocol-compatible while adding a constrained
 - [x] Add capability-driven Phase and Delay/HQ controls with dynamic Generic
   IDs, ESP-NVS persistence, UI cards, short host/build regression, and live
   NVarcher write/readback. Keep unavailable VB Classic hidden and unwritten.
+- [x] Add a shared versioned A800X/Generic ACP configuration format, bind
+  Generic imports to the active schema fingerprint, enable matching UI/API
+  flows, and cover both profiles with host tests.
+- [x] Finalize release 0.4.2 with host tests, the canonical ESP32-S3 4 MB
+  Flash / 2 MB PSRAM image, checksum, local commit, and tag. Do not push.
 
 ## Current step
 
-Phase 2 implementation and verification are complete. Preserve the local
-commit without push; the next step requires Paul's direction.
+Release 0.4.2 is validated, committed, and tagged locally. No push performed.
 
 ## Baseline
 
@@ -50,5 +54,4 @@ commit without push; the next step requires Paul's direction.
 
 ## Release
 
-Version is `0.4.0` for the approved local build and A800X acceptance. No tag,
-release, or push is authorized.
+Version is `0.4.2`. Local commit and annotated tag are authorized. No push.

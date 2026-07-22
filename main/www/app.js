@@ -147,7 +147,10 @@
         toggleModule('preeq-module', activeCapabilities.preeq);
         toggleModule('drc-module', activeCapabilities.drc);
         $('drc-ratio').step = String(activeCapabilities.drc_ratio_step || 0.01);
-        const normalizedPersistence = data.device && data.device.profile === 'a800x_fixed';
+        const normalizedPersistence = data.device &&
+          (data.device.profile === 'a800x_fixed' ||
+           (data.device.profile === 'generic_acp_classic' &&
+            data.device.fingerprint_valid));
         $('btn-dsp-export').disabled = !normalizedPersistence;
         $('btn-dsp-import').disabled = !normalizedPersistence;
       } else {
@@ -1143,7 +1146,7 @@
 
   // --- DSP Configuration Export/Import ---
   let importPreviewData = null;
-  let importFileDsp = null;  // Original-DSP-Daten aus der Import-Datei
+  let importFileConfig = null;  // Complete validated file, including fingerprint
 
   $('btn-dsp-export').addEventListener('click', async () => {
     try {
@@ -1227,7 +1230,7 @@
         const json = JSON.parse(text);
         const result = await api('POST', '/dsp/config/import', json);
         if (result.status !== 'ok') throw new Error(result.error || 'Import validation failed');
-        importFileDsp = json.dsp;  // Vollständige DSP-Daten für Apply behalten
+        importFileConfig = json;
         showImportPreview(result);
       } catch (e) {
         alert('Import failed: ' + e.message);
@@ -1238,6 +1241,7 @@
 
   $('btn-import-cancel').addEventListener('click', () => {
     importPreviewData = null;
+    importFileConfig = null;
     $('import-preview').classList.add('hidden');
   });
 
@@ -1250,13 +1254,7 @@
     msg.className = 'form-message';
     try {
       // Use original file DSP data (not stripped preview) for full validation
-      const dsp = importFileDsp || importPreviewData.data.dsp;
-      // Build apply payload
-      const payload = {
-        schema_version: 1,
-        type: 'bp10-dsp-config',
-        dsp: dsp
-      };
+      const payload = importFileConfig;
       const result = await api('POST', '/dsp/apply', payload);
       if (result.status !== 'ok' || !result.data || !result.data.applied) {
         throw new Error(result.error || 'Apply failed');
@@ -1264,6 +1262,7 @@
       msg.textContent = 'Configuration applied, confirmed, and saved.';
       msg.className = 'form-message is-success';
       importPreviewData = null;
+      importFileConfig = null;
       // Kurz warten, dann DSP-State aktualisieren
       setTimeout(async () => {
         await updateDspState();

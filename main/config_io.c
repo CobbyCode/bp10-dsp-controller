@@ -27,17 +27,45 @@ esp_err_t config_io_export(char **json)
 {
     if (!json) return ESP_ERR_INVALID_ARG;
 
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (!device->valid ||
+        (device->kind != MVS_DEVICE_A800X_FIXED &&
+         (device->kind != MVS_DEVICE_GENERIC_ACP ||
+          !device->fingerprint_valid))) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     cJSON *root = cJSON_CreateObject();
     if (!root) return ESP_ERR_NO_MEM;
 
     // Schema & Version
+    cJSON_AddNumberToObject(root, "format_version", DSP_CONFIG_FORMAT_VERSION);
     cJSON_AddNumberToObject(root, "schema_version", DSP_CONFIG_SCHEMA_VERSION);
     cJSON_AddStringToObject(root, "app_version", APP_VERSION);
     cJSON_AddStringToObject(root, "type", "bp10-dsp-config");
+    cJSON_AddStringToObject(root, "device_type",
+        device->kind == MVS_DEVICE_A800X_FIXED ? "a800x" : "generic_acp");
+
+    if (device->kind == MVS_DEVICE_GENERIC_ACP) {
+        const mvs_schema_fingerprint_t *fp = &device->schema_fingerprint;
+        cJSON *fingerprint = cJSON_AddObjectToObject(root, "schema_fingerprint");
+        cJSON_AddNumberToObject(fingerprint, "vid", fp->vid);
+        cJSON_AddNumberToObject(fingerprint, "pid", fp->pid);
+        cJSON_AddNumberToObject(fingerprint, "adapter_kind", fp->adapter_kind);
+        cJSON_AddNumberToObject(fingerprint, "module_type_count",
+                                fp->module_type_count);
+        cJSON *types = cJSON_AddArrayToObject(fingerprint, "module_types");
+        for (uint8_t i = 0; i < fp->module_type_count; ++i) {
+            cJSON_AddItemToArray(types,
+                                 cJSON_CreateNumber(fp->module_types[i]));
+        }
+    }
 
     // DSP-Konfiguration aus NVS laden
     dsp_profile_t config;
-    esp_err_t err = nvs_settings_load_a800x_config(&config);
+    esp_err_t err = device->kind == MVS_DEVICE_A800X_FIXED
+        ? nvs_settings_load_a800x_config(&config)
+        : nvs_settings_load_generic_config(&device->schema_fingerprint, &config);
     if (err == ESP_OK) {
         cJSON *dsp = cJSON_AddObjectToObject(root, "dsp");
 
@@ -106,6 +134,43 @@ esp_err_t config_io_export(char **json)
     return ESP_OK;
 }
 
+static bool json_integer_in_range(const cJSON *item, int min, int max)
+{
+    return cJSON_IsNumber(item) && item->valuedouble == item->valueint &&
+           item->valueint >= min && item->valueint <= max;
+}
+
+static bool parse_fingerprint(const cJSON *json,
+                              mvs_schema_fingerprint_t *fingerprint)
+{
+    if (!cJSON_IsObject(json) || !fingerprint) return false;
+    memset(fingerprint, 0, sizeof(*fingerprint));
+
+    cJSON *vid = cJSON_GetObjectItem(json, "vid");
+    cJSON *pid = cJSON_GetObjectItem(json, "pid");
+    cJSON *adapter = cJSON_GetObjectItem(json, "adapter_kind");
+    cJSON *count = cJSON_GetObjectItem(json, "module_type_count");
+    cJSON *types = cJSON_GetObjectItem(json, "module_types");
+    if (!json_integer_in_range(vid, 0, UINT16_MAX) ||
+        !json_integer_in_range(pid, 0, UINT16_MAX) ||
+        !json_integer_in_range(adapter, 0, UINT8_MAX) ||
+        !json_integer_in_range(count, 0, MVS_FP_MAX_MODULE_TYPES) ||
+        !cJSON_IsArray(types) || cJSON_GetArraySize(types) != count->valueint) {
+        return false;
+    }
+
+    fingerprint->vid = (uint16_t)vid->valueint;
+    fingerprint->pid = (uint16_t)pid->valueint;
+    fingerprint->adapter_kind = (uint8_t)adapter->valueint;
+    fingerprint->module_type_count = (uint8_t)count->valueint;
+    for (uint8_t i = 0; i < fingerprint->module_type_count; ++i) {
+        cJSON *type = cJSON_GetArrayItem(types, i);
+        if (!json_integer_in_range(type, 0, UINT16_MAX)) return false;
+        fingerprint->module_types[i] = (uint16_t)type->valueint;
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Import (Validierung + Parsing, kein Write)
 // ---------------------------------------------------------------------------
@@ -165,6 +230,17 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
         return ESP_ERR_INVALID_ARG;
     }
 
+    // format_version is the binding compatibility gate. Legacy files without
+    // it are deliberately rejected instead of being guessed.
+    cJSON *format_ver = cJSON_GetObjectItem(root, "format_version");
+    if (!cJSON_IsNumber(format_ver) ||
+        format_ver->valuedouble != format_ver->valueint ||
+        format_ver->valueint != DSP_CONFIG_FORMAT_VERSION) {
+        cJSON_Delete(root);
+        ESP_LOGE(TAG, "Import: Fehlende oder nicht unterstützte format_version");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     // Schema-Version prüfen
     cJSON *schema_ver = cJSON_GetObjectItem(root, "schema_version");
     if (!cJSON_IsNumber(schema_ver)) {
@@ -187,6 +263,33 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
         return ESP_ERR_INVALID_ARG;
     }
 
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    cJSON *device_type = cJSON_GetObjectItem(root, "device_type");
+    if (!device->valid || !cJSON_IsString(device_type)) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (device->kind == MVS_DEVICE_A800X_FIXED) {
+        if (strcmp(device_type->valuestring, "a800x") != 0) {
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_STATE;
+        }
+    } else if (device->kind == MVS_DEVICE_GENERIC_ACP &&
+               device->fingerprint_valid) {
+        mvs_schema_fingerprint_t imported;
+        if (strcmp(device_type->valuestring, "generic_acp") != 0 ||
+            !parse_fingerprint(cJSON_GetObjectItem(root, "schema_fingerprint"),
+                               &imported) ||
+            !mvs_fingerprint_equal(&imported, &device->schema_fingerprint)) {
+            cJSON_Delete(root);
+            ESP_LOGE(TAG, "Import: Generic schema fingerprint mismatch");
+            return ESP_ERR_INVALID_STATE;
+        }
+    } else {
+        cJSON_Delete(root);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     cJSON *dsp = cJSON_GetObjectItem(root, "dsp");
     if (!cJSON_IsObject(dsp)) {
         cJSON_Delete(root);
@@ -194,10 +297,15 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (!dsp_model_get_default_profile(profile)) {
-        cJSON_Delete(root);
-        ESP_LOGE(TAG, "Import: Keine Factory-Basis für aktives Geräteprofil");
-        return ESP_ERR_NOT_SUPPORTED;
+    if (device->kind == MVS_DEVICE_A800X_FIXED) {
+        if (!dsp_model_get_default_profile(profile)) {
+            cJSON_Delete(root);
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+    } else {
+        // Preserve Generic-only fields that are not part of schema v1. Never
+        // synthesize A800X factory values for a discovered device.
+        dsp_model_get_profile(profile);
     }
 
     // Noise Suppressor

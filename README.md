@@ -84,7 +84,7 @@ bp10-dsp-controller/
 |---|---|
 | `usb_host_ctrl` | USB-Host-Initialisierung, Enumeration des MVSilicon-Geräts, HID-Transfer |
 | `mvs_protocol` | MVSilicon-Protokoll-Encoder/Decoder: Framing, Effekt-IDs, Readback-Parsing |
-| `dsp_model` | DSP-Zustandsmodell: Noise Suppressor, Virtual Bass, PreEQ, DRC, Silence Detector |
+| `dsp_model` | DSP state model; factory values are defined only for the AIYIMA A800X |
 | `nvs_settings` | Nichtflüchtige Speicherung: WiFi-Zugangsdaten, DSP-Profile, Gerätename |
 | `wifi_manager` | WLAN: SoftAP + Captive Portal, Heim-WLAN-Verbindung, Provisioning |
 | `mdns_service` | mDNS-Anmeldung: `bp10-xxxx.local` |
@@ -92,7 +92,7 @@ bp10-dsp-controller/
 | `api_handlers` | REST-API-Endpunkte: DSP-Status, Parameter setzen, Profile, OTA, Config |
 | `web_ui` | Eingebettete Web-UI-Assets (HTML, CSS, JS) |
 | `ota_update` | OTA-Firmwareupdate via HTTP/HTTPS |
-| `config_io` | Export/Import der gesamten Konfiguration als JSON |
+| `config_io` | JSON configuration export and import for the AIYIMA A800X and matching Generic ACP devices |
 | `test/` | Unit-Tests mit Mock-USB-Transport |
 
 ## Build

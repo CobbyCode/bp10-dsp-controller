@@ -18,6 +18,7 @@ extern "C" {
 
 /** Schema-Version für Export/Import-Kompatibilität. */
 #define DSP_CONFIG_SCHEMA_VERSION 1
+#define DSP_CONFIG_FORMAT_VERSION 1
 
 /**
  * @brief Aktive DSP-Konfiguration als JSON exportieren.

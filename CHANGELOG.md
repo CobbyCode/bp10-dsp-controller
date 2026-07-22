@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2 - 2026-07-22
+
+- Add one versioned JSON configuration format for the AIYIMA A800X and
+  matching Generic ACP devices.
+- Bind Generic ACP imports to the discovered schema fingerprint before any
+  DSP or NVS write, and reject missing or unsupported format versions.
+- Route imported Generic profiles through the shared DSP apply, full readback
+  verification, runtime commit, and fingerprint-bound NVS persistence path.
+- Enable configuration export and import in the web UI for Generic ACP
+  devices with a valid fingerprint while keeping factory values A800X-only.
+
 ## 0.4.1 - 2026-07-21
 
 - Enable Generic-Persistence (fingerprint-bound ESP-NVS) for non-A800X

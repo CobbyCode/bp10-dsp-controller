@@ -43,10 +43,13 @@
 
 static const char *TAG = "bp10_api";
 
-static bool profile_uses_a800x_persistence(void)
+static bool profile_supports_config_io(void)
 {
     const mvs_device_profile_t *profile = dsp_model_get_device_profile();
-    return profile->valid && profile->kind == MVS_DEVICE_A800X_FIXED;
+    return profile->valid &&
+           (profile->kind == MVS_DEVICE_A800X_FIXED ||
+            (profile->kind == MVS_DEVICE_GENERIC_ACP &&
+             profile->fingerprint_valid));
 }
 
 static bool profile_has_auto_persistence(void)
@@ -211,6 +214,8 @@ static esp_err_t handler_status_get(httpd_req_t *req)
     cJSON_AddBoolToObject(device, "catalog_discovered",
                           device_profile->catalog_discovered);
     cJSON_AddNumberToObject(device, "effect_count", device_profile->catalog_count);
+    cJSON_AddBoolToObject(device, "fingerprint_valid",
+                          device_profile->fingerprint_valid);
 
     cJSON *caps = cJSON_AddObjectToObject(root, "capabilities");
     cJSON_AddBoolToObject(caps, "noise_suppressor",
@@ -1010,7 +1015,7 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
     if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
-    if (!profile_uses_a800x_persistence())
+    if (!profile_supports_config_io())
         return send_error(req, 409, "Not supported for this device profile");
 
     char *buf = NULL;
@@ -1040,12 +1045,14 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
     } else {
         // Kein Body oder kein JSON: NVS-Konfiguration verwenden
         free(buf);
-        if (!nvs_settings_has_a800x_config()) {
-            return send_error(req, 400, "No saved DSP configuration to apply");
-        }
-        esp_err_t err = nvs_settings_load_a800x_config(&profile);
+        const mvs_device_profile_t *device = dsp_model_get_device_profile();
+        esp_err_t err = device->kind == MVS_DEVICE_A800X_FIXED
+            ? nvs_settings_load_a800x_config(&profile)
+            : nvs_settings_load_generic_config(&device->schema_fingerprint,
+                                                &profile);
         if (err != ESP_OK) {
-            return send_error(req, 500, "Failed to load saved DSP configuration");
+            return send_error(req, err == ESP_ERR_NOT_FOUND ? 400 : 500,
+                              "No saved DSP configuration to apply");
         }
     }
 
@@ -1077,7 +1084,7 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
 
 static esp_err_t handler_config_export_post(httpd_req_t *req)
 {
-    if (!profile_uses_a800x_persistence())
+    if (!profile_supports_config_io())
         return send_error(req, 409, "Not supported for this device profile");
     char *json = NULL;
     esp_err_t err = config_io_export(&json);
@@ -1097,7 +1104,7 @@ static esp_err_t handler_config_export_post(httpd_req_t *req)
 
 static esp_err_t handler_config_import_post(httpd_req_t *req)
 {
-    if (!profile_uses_a800x_persistence())
+    if (!profile_supports_config_io())
         return send_error(req, 409, "Not supported for this device profile");
     char *buf = NULL;
     if (req->content_len <= 0 || req->content_len > 32768) {
