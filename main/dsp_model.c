@@ -891,11 +891,15 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
         bool en, hq; uint16_t ms;
         esp_err_t err = dsp_model_read_delay(&en, &ms, &hq);
         if (err != ESP_OK) { ESP_LOGW(TAG, "verify: Delay read failed"); return err; }
-        if (en != expected->delay_enabled ||
-            ms != expected->delay_ms ||
-            hq != expected->delay_hq_enabled) {
-            ESP_LOGW(TAG, "verify: Delay mismatch");
+        if (en != expected->delay_enabled) {
+            ESP_LOGW(TAG, "verify: Delay enabled mismatch");
             return ESP_ERR_INVALID_RESPONSE;
+        }
+        if (expected->delay_enabled) {
+            if (ms != expected->delay_ms || hq != expected->delay_hq_enabled) {
+                ESP_LOGW(TAG, "verify: Delay params mismatch");
+                return ESP_ERR_INVALID_RESPONSE;
+            }
         }
     }
 

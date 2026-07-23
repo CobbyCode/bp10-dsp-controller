@@ -706,15 +706,19 @@ static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
     esp_err_t err = dsp_model_set_delay(requested, requested_delay, requested_hq);
     bool confirmed = false, confirmed_hq = false; uint16_t confirmed_delay = 0;
     if (err == ESP_OK) err = dsp_model_read_delay(&confirmed, &confirmed_delay, &confirmed_hq);
-    if (err != ESP_OK || confirmed != requested || confirmed_delay != requested_delay ||
-        confirmed_hq != requested_hq)
+    if (err != ESP_OK || confirmed != requested)
+        return send_error(req, 500, "Music Delay readback mismatch");
+    // Only verify params when enabled; DSP may normalize/zero params when OFF
+    if (requested && (confirmed_delay != requested_delay ||
+                      confirmed_hq != requested_hq))
         return send_error(req, 500, "Music Delay readback mismatch");
 
     dsp_profile_t next;
     dsp_model_get_profile(&next);
     next.delay_enabled = confirmed;
-    next.delay_ms = confirmed_delay;
-    next.delay_hq_enabled = confirmed_hq;
+    // Preserve user-requested params even when OFF (DSP readback may differ)
+    next.delay_ms = requested_delay;
+    next.delay_hq_enabled = requested_hq;
     esp_err_t save_err = commit_and_persist_profile(&next);
 
     cJSON *result = cJSON_CreateObject();

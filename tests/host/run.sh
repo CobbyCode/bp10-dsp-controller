@@ -29,4 +29,8 @@ cc -std=c11 -Wall -Wextra -Werror \
   "$repo_dir/managed_components/espressif__cjson/cJSON/cJSON.c" \
   -lm -o "$out_dir/config_io_host_tests"
 "$out_dir/config_io_host_tests"
+cc -std=c11 -Wall -Wextra -Werror \
+  "$repo_dir/tests/host/test_delay_verify.c" \
+  -o "$out_dir/delay_verify_host_tests"
+"$out_dir/delay_verify_host_tests"
 "$repo_dir/tests/host/compare_a800x_baseline.sh"
