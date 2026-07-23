@@ -36,6 +36,29 @@ static inline uint16_t read_u16_le(const uint8_t *buf);
 static void load_drc_view(const dsp_profile_t *profile, dsp_drc_view_t *view);
 static void store_drc_view(dsp_profile_t *profile, const dsp_drc_view_t *view);
 
+static void log_full_read(const char *module, uint8_t expected_effect_id,
+                          uint8_t expected_wire_len,
+                          const uint8_t *report, uint16_t report_len)
+{
+    uint8_t actual_effect_id = report_len > 2 ? report[2] : 0;
+    uint8_t actual_wire_len = report_len > 3 ? report[3] : 0;
+    unsigned expected_frame_len = (unsigned)expected_wire_len + 5U;
+    unsigned actual_frame_len = report_len > 3
+        ? (unsigned)actual_wire_len + 5U : 0U;
+    ESP_LOGI(TAG,
+             "%s Full-Read Soll: effect=0x%02X wire=%u frame=%u; "
+             "Ist: effect=0x%02X wire=%u frame=%u HID-report=%u",
+             module, expected_effect_id, expected_wire_len,
+             expected_frame_len, actual_effect_id, actual_wire_len,
+             actual_frame_len, report_len);
+    if (report_len > 0) {
+        uint16_t raw_len = actual_frame_len > 0 &&
+                           actual_frame_len <= report_len
+            ? (uint16_t)actual_frame_len : report_len;
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, report, raw_len, ESP_LOG_INFO);
+    }
+}
+
 // HID-Transfer-Helper
 // ---------------------------------------------------------------------------
 
@@ -598,6 +621,9 @@ static esp_err_t read_drc_classic_id(uint8_t effect_id,
             last_err = err;
             continue;
         }
+        log_full_read(effect_id == 0x90 ? "Rec DRC" :
+                      effect_id == 0x8F ? "Music DRC" : "DRC",
+                      effect_id, 39, report, report_len);
         uint8_t wire_len = report_len >= 4 ? report[3] : 0;
         if (report_len >= 6 && report[0] == MVS_FRAME_MAGIC_1 &&
             report[1] == MVS_FRAME_MAGIC_2 && report[2] == effect_id &&
@@ -1227,9 +1253,13 @@ esp_err_t dsp_model_read_usb_out_gain(mvs_path_id_t path_id, uint16_t *gain_raw)
     vTaskDelay(pdMS_TO_TICKS(50));
     err = usb_host_ctrl_get_report(report, &report_len);
     if (err != ESP_OK) return err;
-    // Expect: header(5) + payload + terminator(1)
-    if (report_len < 12) return ESP_ERR_INVALID_RESPONSE;
-    return mvs_decode_usb_out_gain(report + 5, report_len - 6, gain_raw);
+    log_full_read("USB Out Gain", ug_id, 7, report, report_len);
+    if (report_len < 12 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 || report[2] != ug_id ||
+        report[3] != 7 || report[4] != 0xFF ||
+        report[11] != MVS_FRAME_TERMINATOR)
+        return ESP_ERR_INVALID_RESPONSE;
+    return mvs_decode_usb_out_gain(report + 5, 6, gain_raw);
 }
 
 esp_err_t dsp_model_set_usb_out_gain(mvs_path_id_t path_id, uint16_t gain_raw)

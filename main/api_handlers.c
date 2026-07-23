@@ -197,6 +197,49 @@ static esp_err_t commit_and_persist_multi(const dsp_multi_config_t *config)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+static bool eq_states_equal(const mvs_preeq_state_t *a,
+                            const mvs_preeq_state_t *b);
+
+static esp_err_t verify_generic_eq_persistence(
+    mvs_path_id_t path_id, bool out_eq,
+    const mvs_preeq_state_t *confirmed)
+{
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (!confirmed || device->kind != MVS_DEVICE_GENERIC_ACP)
+        return ESP_OK;
+
+    dsp_multi_config_t runtime;
+    dsp_model_get_multi_config(&runtime);
+    const dsp_profile_t *runtime_path = path_id == MVS_PATH_REC
+        ? &runtime.rec : &runtime.music;
+    const mvs_preeq_state_t *runtime_eq = out_eq
+        ? &runtime_path->out_eq : &runtime_path->preeq;
+
+    dsp_multi_config_t loaded;
+    esp_err_t load_err = nvs_settings_load_generic_config(
+        &device->schema_fingerprint, &loaded);
+    const dsp_profile_t *nvs_path = path_id == MVS_PATH_REC
+        ? &loaded.rec : &loaded.music;
+    const mvs_preeq_state_t *nvs_eq = out_eq
+        ? &nvs_path->out_eq : &nvs_path->preeq;
+    bool runtime_match = eq_states_equal(confirmed, runtime_eq);
+    bool nvs_match = load_err == ESP_OK &&
+                     eq_states_equal(confirmed, nvs_eq);
+
+    ESP_LOGI(TAG,
+             "%s first-apply persist path=%s DSP/Runtime=%s DSP/NVS=%s "
+             "pregain(raw) dsp=%d runtime=%d nvs=%d",
+             out_eq ? "Out EQ" : "PreEQ",
+             path_id == MVS_PATH_REC ? "rec" : "music",
+             runtime_match ? "match" : "MISMATCH",
+             nvs_match ? "match" : "MISMATCH",
+             confirmed->pre_gain_raw, runtime_eq->pre_gain_raw,
+             load_err == ESP_OK ? nvs_eq->pre_gain_raw : 0);
+    if (!runtime_match || !nvs_match)
+        return load_err != ESP_OK ? load_err : ESP_ERR_INVALID_RESPONSE;
+    return ESP_OK;
+}
+
 /**
  * @brief API-Antwort mit ehrlichem saved-Flag und HTTP-Status passend zum
  *        Persistenzergebnis.
@@ -1242,8 +1285,13 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     // Commit PreEQ-Teil ins Profil + gemeinsamer Persist-Abschluss
     dsp_profile_t next;
     get_path_profile(path_id, &next);
-    memcpy(&next.preeq, &requested, sizeof(requested));
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    memcpy(&next.preeq,
+           device->kind == MVS_DEVICE_GENERIC_ACP ? &verify : &requested,
+           sizeof(next.preeq));
     esp_err_t save_err = commit_and_persist_path(path_id, &next);
+    if (save_err == ESP_OK)
+        save_err = verify_generic_eq_persistence(path_id, false, &verify);
 
     // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
@@ -1387,6 +1435,8 @@ static esp_err_t handler_dsp_outeq_post(httpd_req_t *req)
     next.out_eq = confirmed;
     next.out_eq_valid = true;
     esp_err_t save_err = commit_and_persist_path(path_id, &next);
+    if (save_err == ESP_OK)
+        save_err = verify_generic_eq_persistence(path_id, true, &confirmed);
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled",
                           confirmed.block_enabled != 0);
