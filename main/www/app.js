@@ -35,10 +35,20 @@
   const drcState = $('drc-state');
   const drcMessage = $('drc-message');
   const drcEditor = $('drc-module').querySelector('.module-editor');
+  const outeqState = $('outeq-state');
+  const outeqMessage = $('outeq-message');
+  const outeqEditor = $('outeq-module').querySelector('.module-editor');
+  const outeqFilters = $('outeq-filters');
+  const usbOutGainState = $('usb-out-gain-state');
+  const usbOutGainMessage = $('usb-out-gain-message');
+  const usbOutGainEditor = $('usb-out-gain-module').querySelector('.module-editor');
   let preeqBaseline = null;
+  let outeqBaseline = null;
   let activeCapabilities = {};
   let activePreeqSchema = 'none';
   let activeDeviceProfile = 'unknown';
+  let activePath = 'music';
+  let pathCount = 0;
 
   const factoryValueButtonIds = [
     'btn-noise-read', 'btn-bass-read', 'btn-silence-read',
@@ -63,6 +73,17 @@
     const module = $(id);
     if (module) module.classList.toggle('hidden', available !== true);
   }
+
+  const dspModuleIds = [
+    'noise-module', 'bass-module', 'vb-classic-module', 'phase-module',
+    'delay-module', 'silence-module', 'preeq-module', 'outeq-module',
+    'drc-module', 'usb-out-gain-module'
+  ];
+
+  function hideAllDspModules() {
+    dspModuleIds.forEach(id => toggleModule(id, false));
+  }
+  hideAllDspModules();
   // Known fixed A800X values only; Generic ACP has no universal defaults.
   const a800xFactoryPreeqFilters = [
     null, // F0 gehört zum rückseitigen Crossover und wird immer erhalten.
@@ -104,6 +125,35 @@
     return res.json();
   }
 
+  let dspRequestId = 0;
+
+  function withActivePath(url) {
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}path=${encodeURIComponent(activePath)}`;
+  }
+
+  function applyPathCapabilities(pathCaps) {
+    toggleModule('noise-module', pathCaps.noise_suppressor);
+    toggleModule('bass-module', pathCaps.virtual_bass);
+    toggleModule('vb-classic-module', pathCaps.virtual_bass_classic);
+    toggleModule('phase-module', pathCaps.phase);
+    toggleModule('delay-module', pathCaps.delay);
+    toggleModule('preeq-module', pathCaps.preeq);
+    toggleModule('outeq-module', pathCaps.out_eq);
+    toggleModule('drc-module', pathCaps.drc);
+    toggleModule('usb-out-gain-module', pathCaps.usb_out_gain);
+    toggleModule('silence-module',
+      activePath === 'music' && pathCaps.silence_detector);
+    activePreeqSchema = pathCaps.preeq_schema || 'none';
+    $('drc-ratio').step = String(pathCaps.drc_ratio_step || 0.01);
+  }
+
+  function refreshPathCapabilities() {
+    if (!activeCapabilities._pathMap || pathCount <= 1) return;
+    const pathCaps = activeCapabilities._pathMap[activePath];
+    if (pathCaps) applyPathCapabilities(pathCaps);
+  }
+
   // --- Status Update ---
   function updateWifiStatusBar(data) {
     if (data.sta_connected && !data.ap_active) {
@@ -134,18 +184,47 @@
         dspStatus.className = 'status-dot dot-on';
         // Controls remain hidden until /dsp has returned confirmed hardware
         // values. Showing unchecked HTML defaults here causes OFF -> ON jumps.
+        hideAllDspModules();
         activeCapabilities = data.capabilities || {};
         activeDeviceProfile = data.device && data.device.profile || 'unknown';
         activePreeqSchema = activeCapabilities.preeq_schema || 'none';
         updateFactoryValueActions();
-        toggleModule('noise-module', activeCapabilities.noise_suppressor);
-        toggleModule('bass-module', activeCapabilities.virtual_bass);
-        toggleModule('vb-classic-module', activeCapabilities.virtual_bass_classic);
-        toggleModule('phase-module', activeCapabilities.music_phase);
-        toggleModule('delay-module', activeCapabilities.music_delay);
-        toggleModule('silence-module', activeCapabilities.silence_detector);
-        toggleModule('preeq-module', activeCapabilities.preeq);
-        toggleModule('drc-module', activeCapabilities.drc);
+
+        // --- Path Selector (nur Generic Multi-Path) ---
+        pathCount = (data.paths && data.paths.count) || 0;
+        const isA800X = activeDeviceProfile === 'a800x_fixed';
+        const pathSelector = $('path-selector');
+        if (pathCount > 1 && !isA800X) {
+          pathSelector.classList.remove('hidden');
+          $('btn-path-music').className = activePath === 'music'
+            ? 'btn btn-secondary active' : 'btn btn-secondary';
+          $('btn-path-rec').className = activePath === 'rec'
+            ? 'btn btn-secondary active' : 'btn btn-secondary';
+        } else {
+          pathSelector.classList.add('hidden');
+        }
+
+        // --- Per-Path Capabilities ---
+        if (data.paths && data.paths.available) {
+          activeCapabilities._pathMap = {};
+          data.paths.available.forEach(p => {
+            const key = String(p.key || p.label || '').toLowerCase();
+            activeCapabilities._pathMap[key] = p.capabilities || {};
+          });
+          refreshPathCapabilities();
+        } else {
+          // Legacy fallback: globale Capabilities
+          toggleModule('noise-module', activeCapabilities.noise_suppressor);
+          toggleModule('bass-module', activeCapabilities.virtual_bass);
+          toggleModule('vb-classic-module', activeCapabilities.virtual_bass_classic);
+          toggleModule('phase-module', activeCapabilities.music_phase);
+          toggleModule('delay-module', activeCapabilities.music_delay);
+          toggleModule('silence-module', activeCapabilities.silence_detector);
+          toggleModule('preeq-module', activeCapabilities.preeq);
+          toggleModule('drc-module', activeCapabilities.drc);
+          toggleModule('outeq-module', false);
+          toggleModule('usb-out-gain-module', false);
+        }
         $('drc-ratio').step = String(activeCapabilities.drc_ratio_step || 0.01);
         const normalizedPersistence = data.device &&
           (data.device.profile === 'a800x_fixed' ||
@@ -163,8 +242,7 @@
         resetSilenceUnread();
         resetPreeqUnread();
         resetDrcUnread();
-        ['noise-module','bass-module','silence-module','preeq-module','drc-module']
-          .forEach(id => toggleModule(id, false));
+        hideAllDspModules();
         $('btn-dsp-export').disabled = true;
         $('btn-dsp-import').disabled = true;
       }
@@ -360,7 +438,10 @@
   // --- DSP State (nur bei Connected ausgeführt) ---
   async function updateDspState() {
     try {
-      const data = await api('GET', '/dsp');
+      const reqId = ++dspRequestId;
+      const data = await api('GET', withActivePath('/dsp/state'));
+      // Stale response: Pfadwechsel während Request
+      if (reqId !== dspRequestId || data.path !== activePath) return;
 
       if (data.dsp === 'nicht verfügbar' || data.dsp === 'unavailable') {
         dspSection.classList.add('hidden');
@@ -371,31 +452,63 @@
       dspSection.classList.remove('hidden');
       if (dspUnavailable) dspUnavailable.classList.add('hidden');
 
-      if (!noiseEditor.classList.contains('is-dirty')) setNoiseForm(data);
-      if (!bassEditor.classList.contains('is-dirty')) setBassForm(data);
-      if (data.silence && data.silence.valid === true) {
-        setSilenceForm(data.silence.enabled);
+      if (data.noise_suppressor && data.noise_suppressor.valid &&
+          !noiseEditor.classList.contains('is-dirty')) {
+        setNoiseForm({
+          noise_suppressor: data.noise_suppressor.enabled,
+          noise_threshold_db: data.noise_suppressor.threshold_db,
+          noise_ratio: data.noise_suppressor.ratio,
+          noise_attack_ms: data.noise_suppressor.attack_ms,
+          noise_release_ms: data.noise_suppressor.release_ms
+        });
+      }
+      if (data.virtual_bass && data.virtual_bass.valid &&
+          !bassEditor.classList.contains('is-dirty')) {
+        setBassForm({
+          virtual_bass: data.virtual_bass.enabled,
+          bass_cutoff_hz: data.virtual_bass.cutoff_hz,
+          bass_intensity_pct: data.virtual_bass.intensity_pct,
+          bass_enhanced: data.virtual_bass.bass_enhanced
+        });
+      }
+      if (data.silence && data.silence.valid) {
+        if (!silenceEditor.classList.contains('is-dirty'))
+          setSilenceForm(data.silence.enabled);
       } else {
         resetSilenceUnread();
       }
-      if (data.preeq && data.preeq.valid === true) {
-        const preeqData = {
+      // PreEQ: immer in /dsp/state, flache Felder
+      if (data.preeq && data.preeq.valid &&
+          !preeqEditor.classList.contains('is-dirty')) {
+        setPreeqForm({
           preeq_enabled: data.preeq.enabled,
           preeq_pregain_db: data.preeq.pregain_db,
           preeq_filters: data.preeq.filters
-        };
-        if (!preeqEditor.classList.contains('is-dirty')) setPreeqForm(preeqData);
-      } else {
+        });
+      } else if (!data.preeq || !data.preeq.valid) {
         resetPreeqUnread();
       }
+
+      // Out EQ
+      if (data.out_eq && data.out_eq.valid) {
+        if (!outeqEditor.classList.contains('is-dirty')) setOutEqForm(data.out_eq);
+      } else {
+        resetOutEqUnread();
+      }
+
       if (data.drc && data.drc.valid === true) setDrcForm(data.drc);
       else resetDrcUnread();
       if (data.virtual_bass_classic && data.virtual_bass_classic.valid)
         setVbClassicForm(data.virtual_bass_classic);
-      if (data.music_phase && data.music_phase.valid)
-        setPhaseForm(data.music_phase);
-      if (data.music_delay && data.music_delay.valid)
-        setDelayForm(data.music_delay);
+      if (data.phase && data.phase.valid)
+        setPhaseForm(data.phase);
+      if (data.delay && data.delay.valid)
+        setDelayForm(data.delay);
+      // USB Out Gain
+      if (data.usb_out_gain && data.usb_out_gain.valid)
+        setUsbOutGainForm(data.usb_out_gain);
+      else
+        resetUsbOutGainUnread();
     } catch (e) {
       console.error('DSP state update failed:', e);
     }
@@ -416,7 +529,7 @@
     button.disabled = true;
     message.textContent = 'Writing and verifying…';
     try {
-      const result = await api('POST', apiPath, payload);
+      const result = await api('POST', withActivePath(apiPath), payload);
       if (result.status !== 'ok' || !result.data || !result.data.confirmed) {
         throw new Error(result.error || 'Readback mismatch');
       }
@@ -431,6 +544,190 @@
       message.className = 'form-message is-error';
     } finally { button.disabled = false; }
   }
+
+  // --- Path Switch Handler ---
+  async function switchPath(newPath) {
+    if (activePath === newPath || pathCount <= 1) return;
+    $('btn-path-music').disabled = true;
+    $('btn-path-rec').disabled = true;
+    activePath = newPath;
+    ++dspRequestId;
+    hideAllDspModules();
+    $('btn-path-music').className = activePath === 'music'
+      ? 'btn btn-secondary active' : 'btn btn-secondary';
+    $('btn-path-rec').className = activePath === 'rec'
+      ? 'btn btn-secondary active' : 'btn btn-secondary';
+    $('btn-path-music').disabled = false;
+    $('btn-path-rec').disabled = false;
+    refreshPathCapabilities();
+    resetPreeqUnread();
+    resetOutEqUnread();
+    resetDrcUnread();
+    resetSilenceUnread();
+    await updateDspState();
+  }
+  $('btn-path-music').addEventListener('click', () => switchPath('music'));
+  $('btn-path-rec').addEventListener('click', () => switchPath('rec'));
+
+  // --- Out EQ Form Functions ---
+  function cloneOutEq(data) {
+    return {
+      enabled: data.enabled === true,
+      pregain_db: Number(data.pregain_db),
+      filters: (data.filters || []).map(f => ({
+        enabled: f.enabled === true, type: Number(f.type),
+        frequency_hz: Number(f.frequency_hz), q: Number(f.q), gain_db: Number(f.gain_db)
+      }))
+    };
+  }
+
+  function setOutEqForm(data) {
+    if (!Array.isArray(data.filters) || data.filters.length !== 10) return;
+    outeqBaseline = cloneOutEq(data);
+    const filterTypes = activePreeqSchema === 'classic_10band'
+      ? classicFilterTypes : a800xFilterTypes;
+    $('outeq-enable').checked = outeqBaseline.enabled;
+    $('outeq-enable').disabled = false;
+    $('outeq-pregain').value = outeqBaseline.pregain_db.toFixed(2);
+    $('outeq-pregain').disabled = false;
+    outeqFilters.innerHTML = outeqBaseline.filters.map((f, i) => `
+      <div class="filter-card" data-filter="${i}">
+        <div class="filter-title"><strong>F${i}</strong><label><input type="checkbox" data-field="enabled" ${f.enabled ? 'checked' : ''}> On</label></div>
+        <div class="filter-fields">
+          <label class="field"><span>Type</span><select data-field="type">${filterTypes.map((t, n) => `<option value="${n}" ${n === f.type ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+          <label class="field"><span>Frequency (Hz)</span><input type="number" data-field="frequency_hz" min="1" max="65535" step="1" value="${f.frequency_hz}"></label>
+          <label class="field"><span>Gain (dB)</span><input type="number" data-field="gain_db" step="0.01" value="${f.gain_db.toFixed(2)}"></label>
+          <label class="field"><span>Q</span><input type="number" data-field="q" min="0.001" step="0.001" value="${f.q.toFixed(3)}"></label>
+        </div>
+      </div>`).join('');
+    $('btn-outeq-apply').disabled = false;
+    outeqState.textContent = outeqBaseline.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED';
+    outeqState.className = 'module-state ' + (outeqBaseline.enabled ? 'is-on' : '');
+    outeqEditor.classList.remove('is-dirty');
+    drawOutEq();
+  }
+
+  function resetOutEqUnread() {
+    outeqBaseline = null;
+    $('outeq-enable').checked = false;
+    $('outeq-enable').disabled = true;
+    $('outeq-pregain').value = '';
+    $('outeq-pregain').disabled = true;
+    $('outeq-pregain').placeholder = 'Not read';
+    $('btn-outeq-apply').disabled = true;
+    outeqFilters.innerHTML = '<p class="module-hint">A complete Out EQ readback is required.</p>';
+    outeqState.textContent = 'NOT READ';
+    outeqState.className = 'module-state';
+    outeqEditor.classList.remove('is-dirty');
+    drawOutEq();
+  }
+
+  function getOutEqForm() {
+    return {
+      enabled: $('outeq-enable').checked,
+      pregain_db: Number($('outeq-pregain').value),
+      filters: [...outeqFilters.querySelectorAll('[data-filter]')].map(card => ({
+        enabled: card.querySelector('[data-field="enabled"]').checked,
+        type: Number(card.querySelector('[data-field="type"]').value),
+        frequency_hz: Number(card.querySelector('[data-field="frequency_hz"]').value),
+        gain_db: Number(card.querySelector('[data-field="gain_db"]').value),
+        q: Number(card.querySelector('[data-field="q"]').value)
+      }))
+    };
+  }
+
+  function changedOutEqFilters(now) {
+    if (!outeqBaseline) return [];
+    return now.filters.flatMap((f, index) => {
+      const old = outeqBaseline.filters[index];
+      const change = { index };
+      let dirty = false;
+      for (const key of ['enabled','type','frequency_hz','gain_db','q']) {
+        if (f[key] !== old[key]) { change[key] = f[key]; dirty = true; }
+      }
+      return dirty ? [change] : [];
+    });
+  }
+
+  function markOutEqDirty() {
+    outeqEditor.classList.add('is-dirty');
+    outeqMessage.textContent = 'Local preview · not yet applied';
+    outeqMessage.className = 'form-message';
+    drawOutEq();
+  }
+
+  function drawOutEq() {
+    const canvas=$('outeq-canvas'), ctx=canvas.getContext('2d'), w=canvas.width, h=canvas.height;
+    ctx.clearRect(0,0,w,h); ctx.fillStyle='#121a1d'; ctx.fillRect(0,0,w,h);
+    ctx.strokeStyle='#273236'; ctx.fillStyle='#819096'; ctx.font='12px sans-serif';
+    for (const db of [-18,-12,-6,0,6,12,18]) { const y=12+(18-db)/36*(h-40); ctx.beginPath(); ctx.moveTo(48,y); ctx.lineTo(w-12,y); ctx.stroke(); ctx.fillText(`${db} dB`,4,y+4); }
+    for (const f of [20,50,100,200,500,1000,2000,5000,10000,20000]) { const x=48+Math.log10(f/20)/3*(w-60); ctx.beginPath(); ctx.moveTo(x,12); ctx.lineTo(x,h-28); ctx.stroke(); ctx.fillText(f>=1000?`${f/1000}k`:`${f}`,x-8,h-8); }
+    if (outeqBaseline) drawCurve(ctx,outeqBaseline,'#738087',false);
+    if (outeqBaseline && outeqFilters.querySelector('[data-filter]')) {
+      const preview=getOutEqForm();
+      drawIndividualCurves(ctx,preview);
+      drawCurve(ctx,preview,'#a8ff35',true);
+    }
+  }
+
+  $('outeq-enable').addEventListener('input', markOutEqDirty);
+  $('outeq-pregain').addEventListener('input', markOutEqDirty);
+  outeqFilters.addEventListener('input', markOutEqDirty);
+  outeqFilters.addEventListener('change', markOutEqDirty);
+
+  $('btn-outeq-apply').addEventListener('click', async () => {
+    const button=$('btn-outeq-apply'); button.disabled=true; outeqMessage.textContent='Read-modify-write and verification…';
+    try {
+      const reqId = ++dspRequestId;
+      const now=getOutEqForm();
+      const result=await api('POST',withActivePath('/dsp/outeq'),{
+        enable:now.enabled,pregain_db:now.pregain_db,filters:changedOutEqFilters(now)
+      });
+      if (reqId !== dspRequestId) return;
+      if(result.status!=='ok'||!result.data||!result.data.confirmed) throw new Error(result.error||'Readback mismatch');
+      const fresh=await api('GET',withActivePath('/dsp/state'));
+      if (reqId !== dspRequestId) return;
+      if (fresh.out_eq && fresh.out_eq.valid) setOutEqForm(fresh.out_eq);
+      outeqMessage.textContent='Complete Out EQ readback confirmed'; outeqMessage.className='form-message is-success';
+    } catch(error) { outeqState.textContent='MISMATCH'; outeqState.className='module-state is-error'; outeqMessage.textContent=error.message; outeqMessage.className='form-message is-error'; }
+    finally { button.disabled=false; }
+  });
+
+  // --- USB Out Gain Form Functions ---
+  function setUsbOutGainForm(data) {
+    $('usb-out-gain-db').value = Number(data.gain_db).toFixed(2);
+    $('usb-out-gain-db').disabled = false;
+    $('btn-usb-out-gain-apply').disabled = false;
+    usbOutGainState.textContent = Number(data.gain_db).toFixed(2) + ' dB · CONFIRMED';
+    usbOutGainState.className = 'module-state';
+    usbOutGainEditor.classList.remove('is-dirty');
+  }
+
+  function resetUsbOutGainUnread() {
+    $('usb-out-gain-db').value = '';
+    $('usb-out-gain-db').disabled = true;
+    $('usb-out-gain-db').placeholder = 'Not read';
+    $('btn-usb-out-gain-apply').disabled = true;
+    usbOutGainState.textContent = 'NOT READ';
+    usbOutGainState.className = 'module-state';
+    usbOutGainEditor.classList.remove('is-dirty');
+  }
+
+  $('usb-out-gain-db').addEventListener('input', () => {
+    usbOutGainEditor.classList.add('is-dirty');
+    usbOutGainMessage.textContent = 'Unapplied change';
+    usbOutGainMessage.className = 'form-message';
+  });
+
+  $('btn-usb-out-gain-apply').addEventListener('click', () => applyWithReadback('/dsp/usb-out-gain', {
+    gain_db: Number($('usb-out-gain-db').value)
+  }, {
+    button: $('btn-usb-out-gain-apply'),
+    message: usbOutGainMessage,
+    state: usbOutGainState,
+    editor: usbOutGainEditor,
+    formSetter: setUsbOutGainForm
+  }));
 
   function setVbClassicForm(data) {
     $('vb-classic-enable').checked = data.enabled === true;
@@ -541,7 +838,7 @@
     button.disabled = true;
     bassMessage.textContent = 'Writing and verifying…';
     try {
-      const result = await api('POST', '/dsp/bass', {
+      const result = await api('POST', withActivePath('/dsp/bass'), {
         enable: $('virtual-bass').checked,
         cutoff_hz: Number($('bass-cutoff').value),
         intensity_pct: Number($('bass-intensity').value),
@@ -637,7 +934,7 @@
     button.disabled = true;
     drcMessage.textContent = 'Read-modify-write and verification…';
     try {
-      const result = await api('POST', '/dsp/drc', {
+      const result = await api('POST', withActivePath('/dsp/drc'), {
         enable: $('drc-enable').checked,
         pregain_db: Number($('drc-pregain').value),
         threshold_db: Number($('drc-threshold').value),
@@ -698,7 +995,7 @@
     button.disabled = true;
     silenceMessage.textContent = 'Writing and verifying…';
     try {
-      const result = await api('POST', '/dsp/silence', {
+      const result = await api('POST', withActivePath('/dsp/silence'), {
         enable: $('silence-detector').checked
       });
       if (result.status !== 'ok' || !result.data || !result.data.confirmed) {
@@ -891,10 +1188,18 @@
   $('btn-preeq-apply').addEventListener('click', async () => {
     const button=$('btn-preeq-apply'); button.disabled=true; preeqMessage.textContent='Read-modify-write and verification…';
     try {
+      const reqId = ++dspRequestId;
       const now=getPreeqForm();
-      const result=await api('POST','/dsp/preeq',{enable:now.enabled,pregain_db:now.pregain_db,filters:changedFilters(now)});
+      const result=await api('POST',withActivePath('/dsp/preeq'),{enable:now.enabled,pregain_db:now.pregain_db,filters:changedFilters(now)});
+      if (reqId !== dspRequestId) return;
       if(result.status!=='ok'||!result.data||!result.data.confirmed) throw new Error(result.error||'Readback mismatch');
-      const fresh=await api('GET','/dsp'); setPreeqForm(fresh);
+      const fresh=await api('GET',withActivePath('/dsp/state'));
+      if (reqId !== dspRequestId) return;
+      if (fresh.preeq_enabled !== undefined) setPreeqForm({
+        preeq_enabled: fresh.preeq_enabled,
+        preeq_pregain_db: fresh.preeq_pregain_db,
+        preeq_filters: fresh.preeq_filters
+      });
       preeqMessage.textContent='Complete PreEQ readback confirmed'; preeqMessage.className='form-message is-success';
     } catch(error) { preeqState.textContent='MISMATCH'; preeqState.className='module-state is-error'; preeqMessage.textContent=error.message; preeqMessage.className='form-message is-error'; }
     finally { button.disabled=false; }
@@ -924,7 +1229,7 @@
     button.disabled = true;
     noiseMessage.textContent = 'Writing and verifying…';
     try {
-      const result = await api('POST', '/dsp/noise', {
+      const result = await api('POST', withActivePath('/dsp/noise'), {
         enable: $('noise-suppressor').checked,
         threshold_db: Number($('noise-threshold').value),
         ratio: Number($('noise-ratio').value),

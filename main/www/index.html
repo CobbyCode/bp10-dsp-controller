@@ -29,6 +29,11 @@
   <!-- DSP Controls (nur bei Connected sichtbar) -->
   <section id="dsp-controls" class="hidden">
     <h2>DSP Control</h2>
+    <div id="path-selector" class="hidden" style="margin-bottom:12px">
+      <label style="margin-right:8px;font-weight:600">Path:</label>
+      <button id="btn-path-music" class="btn btn-secondary" style="margin-right:4px">Music</button>
+      <button id="btn-path-rec" class="btn btn-secondary">REC</button>
+    </div>
     <div class="control-grid">
       <details class="module-card" id="noise-module">
         <summary><span>Noise Suppressor</span><span id="noise-state" class="module-state">NOT READ</span></summary>
@@ -113,6 +118,27 @@
             <label class="field"><span>Release (ms)</span><input type="number" id="drc-release" step="1" disabled></label>
           </div>
           <div class="form-actions"><button id="btn-drc-reset" class="btn btn-secondary" disabled>Load Factory Values</button><button id="btn-drc-apply" class="btn btn-primary" disabled>Apply</button><span id="drc-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card module-card-wide hidden" id="outeq-module">
+        <summary><span>Out EQ</span><span id="outeq-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <label class="switch-row"><span><strong>Enabled</strong></span><input type="checkbox" id="outeq-enable" disabled><span class="switch"></span></label>
+          <div class="parameter-grid dsp-param-grid">
+            <label class="field"><span>Pre-Gain (dB)</span><input type="number" id="outeq-pregain" step="0.01" disabled placeholder="Not read"></label>
+          </div>
+          <div class="eq-preview"><canvas id="outeq-canvas" width="900" height="300"></canvas><div class="preview-legend"><span class="actual">DSP Readback</span><span class="preview">Local Preview</span></div></div>
+          <div id="outeq-filters" class="preeq-editor-grid"><p class="module-hint">A complete Out EQ readback is required.</p></div>
+          <div class="form-actions"><button id="btn-outeq-apply" class="btn btn-primary" disabled>Apply</button><span id="outeq-message" class="form-message"></span></div>
+        </div>
+      </details>
+      <details class="module-card hidden" id="usb-out-gain-module">
+        <summary><span>USB Out Gain</span><span id="usb-out-gain-state" class="module-state">NOT READ</span></summary>
+        <div class="module-editor">
+          <div class="parameter-grid dsp-param-grid">
+            <label class="field"><span>Gain (dB)</span><input type="number" id="usb-out-gain-db" step="0.01" disabled placeholder="Not read"></label>
+          </div>
+          <div class="form-actions"><button id="btn-usb-out-gain-apply" class="btn btn-primary" disabled>Apply</button><span id="usb-out-gain-message" class="form-message"></span></div>
         </div>
       </details>
     </div>
