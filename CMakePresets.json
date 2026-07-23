@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 16
+  },
+  "configurePresets": [
+    {
+      "name": "product",
+      "displayName": "Product (4 MB Flash, 2 MB Quad PSRAM)",
+      "binaryDir": "build",
+      "cacheVariables": {
+        "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.product.defaults"
+      }
+    },
+    {
+      "name": "devboard",
+      "displayName": "Devboard (16 MB Flash, 8 MB Octal PSRAM)",
+      "binaryDir": "build-devboard",
+      "cacheVariables": {
+        "SDKCONFIG_DEFAULTS": "sdkconfig.defaults;sdkconfig.devboard.defaults"
+      }
+    }
+  ]
+}

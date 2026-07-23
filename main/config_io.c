@@ -85,6 +85,32 @@ esp_err_t config_io_export(char **json)
         cJSON_AddNumberToObject(vb, "intensity_pct", config.virtual_bass_intensity_pct);
         cJSON_AddBoolToObject(vb, "bass_enhanced", config.virtual_bass_enhanced);
 
+        if (device->virtual_bass_classic.available &&
+            config.phase2_extended_valid) {
+            cJSON *vbc = cJSON_AddObjectToObject(
+                dsp, "virtual_bass_classic");
+            cJSON_AddBoolToObject(
+                vbc, "enabled", config.virtual_bass_classic_enabled);
+            cJSON_AddNumberToObject(
+                vbc, "cutoff_hz", config.virtual_bass_classic_cutoff_hz);
+            cJSON_AddNumberToObject(
+                vbc, "intensity_pct",
+                config.virtual_bass_classic_intensity_pct);
+        }
+
+        if (device->phase.available && config.phase2_extended_valid) {
+            cJSON *phase = cJSON_AddObjectToObject(dsp, "music_phase");
+            cJSON_AddBoolToObject(phase, "inverted", config.phase_invert);
+        }
+
+        if (device->delay_hq.available && config.phase2_extended_valid) {
+            cJSON *delay = cJSON_AddObjectToObject(dsp, "music_delay");
+            cJSON_AddBoolToObject(delay, "enabled", config.delay_enabled);
+            cJSON_AddNumberToObject(delay, "delay_ms", config.delay_ms);
+            cJSON_AddBoolToObject(
+                delay, "hq_enabled", config.delay_hq_enabled);
+        }
+
         // Silence Detector
         cJSON *sd = cJSON_AddObjectToObject(dsp, "silence_detector");
         cJSON_AddBoolToObject(sd, "enabled", config.silence_detector_enabled);
@@ -302,6 +328,22 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
             cJSON_Delete(root);
             return ESP_ERR_NOT_SUPPORTED;
         }
+        // Schema v1 originally omitted the appended Phase-2 fields. Preserve
+        // the confirmed runtime values unless the import explicitly carries
+        // the complete extended section below.
+        dsp_profile_t runtime;
+        dsp_model_get_profile(&runtime);
+        profile->virtual_bass_classic_enabled =
+            runtime.virtual_bass_classic_enabled;
+        profile->virtual_bass_classic_cutoff_hz =
+            runtime.virtual_bass_classic_cutoff_hz;
+        profile->virtual_bass_classic_intensity_pct =
+            runtime.virtual_bass_classic_intensity_pct;
+        profile->phase_invert = runtime.phase_invert;
+        profile->delay_enabled = runtime.delay_enabled;
+        profile->delay_ms = runtime.delay_ms;
+        profile->delay_hq_enabled = runtime.delay_hq_enabled;
+        profile->phase2_extended_valid = runtime.phase2_extended_valid;
     } else {
         // Preserve Generic-only fields that are not part of schema v1. Never
         // synthesize A800X factory values for a discovered device.
@@ -335,6 +377,53 @@ esp_err_t config_io_parse_import(const char *json, dsp_profile_t *profile)
     profile->virtual_bass_intensity_pct = (uint16_t)item->valuedouble;
     item = cJSON_GetObjectItem(vb, "bass_enhanced");
     profile->virtual_bass_enhanced = cJSON_IsTrue(item);
+
+    bool extended_complete = true;
+    if (device->virtual_bass_classic.available) {
+        cJSON *vbc = cJSON_GetObjectItem(dsp, "virtual_bass_classic");
+        cJSON *enabled = cJSON_GetObjectItem(vbc, "enabled");
+        cJSON *cutoff = cJSON_GetObjectItem(vbc, "cutoff_hz");
+        cJSON *intensity = cJSON_GetObjectItem(vbc, "intensity_pct");
+        if (!cJSON_IsObject(vbc) || !cJSON_IsBool(enabled) ||
+            !json_integer_in_range(cutoff, 0, UINT16_MAX) ||
+            !json_integer_in_range(intensity, 0, UINT16_MAX)) {
+            extended_complete = false;
+        } else {
+            profile->virtual_bass_classic_enabled = cJSON_IsTrue(enabled);
+            profile->virtual_bass_classic_cutoff_hz =
+                (uint16_t)cutoff->valueint;
+            profile->virtual_bass_classic_intensity_pct =
+                (uint16_t)intensity->valueint;
+        }
+    }
+    if (device->phase.available) {
+        cJSON *phase = cJSON_GetObjectItem(dsp, "music_phase");
+        cJSON *inverted = cJSON_GetObjectItem(phase, "inverted");
+        if (!cJSON_IsObject(phase) || !cJSON_IsBool(inverted)) {
+            extended_complete = false;
+        } else {
+            profile->phase_invert = cJSON_IsTrue(inverted);
+        }
+    }
+    if (device->delay_hq.available) {
+        cJSON *delay = cJSON_GetObjectItem(dsp, "music_delay");
+        cJSON *enabled = cJSON_GetObjectItem(delay, "enabled");
+        cJSON *delay_ms = cJSON_GetObjectItem(delay, "delay_ms");
+        cJSON *hq_enabled = cJSON_GetObjectItem(delay, "hq_enabled");
+        if (!cJSON_IsObject(delay) || !cJSON_IsBool(enabled) ||
+            !json_integer_in_range(delay_ms, 0, UINT16_MAX) ||
+            !cJSON_IsBool(hq_enabled)) {
+            extended_complete = false;
+        } else {
+            profile->delay_enabled = cJSON_IsTrue(enabled);
+            profile->delay_ms = (uint16_t)delay_ms->valueint;
+            profile->delay_hq_enabled = cJSON_IsTrue(hq_enabled);
+        }
+    }
+    if (device->virtual_bass_classic.available || device->phase.available ||
+        device->delay_hq.available) {
+        profile->phase2_extended_valid = extended_complete;
+    }
 
     // Silence Detector
     cJSON *sd = cJSON_GetObjectItem(dsp, "silence_detector");

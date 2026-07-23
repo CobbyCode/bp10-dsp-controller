@@ -899,10 +899,63 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     mvs_prepare_preeq_for_schema(device_profile->preeq_schema, &requested);
 
     // Targeted verify: only PreEQ, no global readback
+    // Semantic field-by-field comparison (not raw memcmp — booleans may be 0x0001 vs 0xFFFF)
     mvs_preeq_state_t verify;
     err = dsp_model_read_preeq(&verify);
-    if (err != ESP_OK || memcmp(&requested, &verify, sizeof(requested)) != 0) {
-        return send_error(req, 500, "PreEQ readback mismatch");
+    if (err != ESP_OK) {
+        return send_error(req, 500, "PreEQ readback failed");
+    }
+    {
+        bool mismatch = false;
+        int exp_block = requested.block_enabled ? 1 : 0;
+        int got_block = verify.block_enabled ? 1 : 0;
+        if (exp_block != got_block) {
+            ESP_LOGE(TAG, "PreEQ verify: block_enabled mismatch exp=%d got=%d",
+                     exp_block, got_block);
+            mismatch = true;
+        }
+        if (requested.pre_gain_raw != verify.pre_gain_raw) {
+            ESP_LOGE(TAG, "PreEQ verify: pregain mismatch exp=%d got=%d",
+                     requested.pre_gain_raw, verify.pre_gain_raw);
+            mismatch = true;
+        }
+        if (requested.selected_filter != verify.selected_filter) {
+            ESP_LOGE(TAG, "PreEQ verify: selected_filter mismatch exp=%d got=%d",
+                     requested.selected_filter, verify.selected_filter);
+            mismatch = true;
+        }
+        for (int i = 0; i < 10 && !mismatch; i++) {
+            int exp_en = requested.filters[i].enabled ? 1 : 0;
+            int got_en = verify.filters[i].enabled ? 1 : 0;
+            if (exp_en != got_en) {
+                ESP_LOGE(TAG, "PreEQ verify: filter[%d].enabled mismatch exp=%d got=%d",
+                         i, exp_en, got_en);
+                mismatch = true; break;
+            }
+            if (requested.filters[i].type != verify.filters[i].type) {
+                ESP_LOGE(TAG, "PreEQ verify: filter[%d].type mismatch exp=%d got=%d",
+                         i, requested.filters[i].type, verify.filters[i].type);
+                mismatch = true; break;
+            }
+            if (requested.filters[i].frequency_hz != verify.filters[i].frequency_hz) {
+                ESP_LOGE(TAG, "PreEQ verify: filter[%d].freq mismatch exp=%d got=%d",
+                         i, requested.filters[i].frequency_hz, verify.filters[i].frequency_hz);
+                mismatch = true; break;
+            }
+            if (requested.filters[i].q_raw != verify.filters[i].q_raw) {
+                ESP_LOGE(TAG, "PreEQ verify: filter[%d].q_raw mismatch exp=%d got=%d",
+                         i, requested.filters[i].q_raw, verify.filters[i].q_raw);
+                mismatch = true; break;
+            }
+            if (requested.filters[i].gain_raw != verify.filters[i].gain_raw) {
+                ESP_LOGE(TAG, "PreEQ verify: filter[%d].gain_raw mismatch exp=%d got=%d",
+                         i, requested.filters[i].gain_raw, verify.filters[i].gain_raw);
+                mismatch = true; break;
+            }
+        }
+        if (mismatch) {
+            return send_error(req, 500, "PreEQ readback mismatch");
+        }
     }
 
     // Commit PreEQ-Teil ins Profil + gemeinsamer Persist-Abschluss

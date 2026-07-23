@@ -857,7 +857,8 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
     }
 
     // Virtual Bass Classic
-    if (dev->virtual_bass_classic.available) {
+    if (expected->phase2_extended_valid &&
+        dev->virtual_bass_classic.available) {
         bool en; uint16_t cut, it;
         esp_err_t err = dsp_model_read_virtual_bass_classic(&en, &cut, &it);
         if (err != ESP_OK) { ESP_LOGW(TAG, "verify: VBC read failed"); return err; }
@@ -875,7 +876,7 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
     }
 
     // Music Phase
-    if (dev->phase.available) {
+    if (expected->phase2_extended_valid && dev->phase.available) {
         bool in;
         esp_err_t err = dsp_model_read_phase(&in);
         if (err != ESP_OK) { ESP_LOGW(TAG, "verify: Phase read failed"); return err; }
@@ -886,7 +887,7 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
     }
 
     // Music Delay
-    if (dev->delay_hq.available) {
+    if (expected->phase2_extended_valid && dev->delay_hq.available) {
         bool en, hq; uint16_t ms;
         esp_err_t err = dsp_model_read_delay(&en, &ms, &hq);
         if (err != ESP_OK) { ESP_LOGW(TAG, "verify: Delay read failed"); return err; }
@@ -909,7 +910,7 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
         }
     }
 
-    // PreEQ
+    // PreEQ — semantic field-by-field comparison (not raw memcmp)
     if (dev->preeq.available) {
         mvs_preeq_state_t state;
         esp_err_t err = dsp_model_read_preeq(&state);
@@ -925,8 +926,58 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
             }
         }
         mvs_prepare_preeq_for_schema(dev->preeq_schema, &state);
-        if (memcmp(&state, &expected->preeq, sizeof(state)) != 0) {
-            ESP_LOGW(TAG, "verify: PreEQ mismatch");
+
+        // Apply same schema-prep to expected profile (import parser preserves
+        // old selected_filter; schema-prep must match both sides)
+        mvs_preeq_state_t exp_norm = expected->preeq;
+        mvs_prepare_preeq_for_schema(dev->preeq_schema, &exp_norm);
+
+        // Normalize booleans to 0/1, then compare field by field
+        const mvs_preeq_state_t *exp = &exp_norm;
+        bool mismatch = false;
+
+        int exp_block = exp->block_enabled ? 1 : 0;
+        int got_block = state.block_enabled ? 1 : 0;
+        if (exp_block != got_block) {
+            ESP_LOGW(TAG, "verify: PreEQ block_enabled mismatch exp=%d got=%d",
+                     exp_block, got_block);
+            mismatch = true;
+        }
+        if (exp->pre_gain_raw != state.pre_gain_raw) {
+            ESP_LOGW(TAG, "verify: PreEQ pre_gain_raw mismatch exp=%d got=%d",
+                     exp->pre_gain_raw, state.pre_gain_raw);
+            mismatch = true;
+        }
+        for (int i = 0; i < 10 && !mismatch; i++) {
+            int exp_en = exp->filters[i].enabled ? 1 : 0;
+            int got_en = state.filters[i].enabled ? 1 : 0;
+            if (exp_en != got_en) {
+                ESP_LOGW(TAG, "verify: PreEQ filter[%d].enabled mismatch exp=%d got=%d",
+                         i, exp_en, got_en);
+                mismatch = true; break;
+            }
+            if (exp->filters[i].type != state.filters[i].type) {
+                ESP_LOGW(TAG, "verify: PreEQ filter[%d].type mismatch exp=%d got=%d",
+                         i, exp->filters[i].type, state.filters[i].type);
+                mismatch = true; break;
+            }
+            if (exp->filters[i].frequency_hz != state.filters[i].frequency_hz) {
+                ESP_LOGW(TAG, "verify: PreEQ filter[%d].freq mismatch exp=%d got=%d",
+                         i, exp->filters[i].frequency_hz, state.filters[i].frequency_hz);
+                mismatch = true; break;
+            }
+            if (exp->filters[i].q_raw != state.filters[i].q_raw) {
+                ESP_LOGW(TAG, "verify: PreEQ filter[%d].q_raw mismatch exp=%d got=%d",
+                         i, exp->filters[i].q_raw, state.filters[i].q_raw);
+                mismatch = true; break;
+            }
+            if (exp->filters[i].gain_raw != state.filters[i].gain_raw) {
+                ESP_LOGW(TAG, "verify: PreEQ filter[%d].gain_raw mismatch exp=%d got=%d",
+                         i, exp->filters[i].gain_raw, state.filters[i].gain_raw);
+                mismatch = true; break;
+            }
+        }
+        if (mismatch) {
             return ESP_ERR_INVALID_RESPONSE;
         }
     }
@@ -1044,6 +1095,10 @@ esp_err_t dsp_model_set_noise_suppressor_state(bool enable,
 {
     if (!s_device_profile.noise_suppressor.available) return ESP_ERR_NOT_SUPPORTED;
     uint8_t ns_id = s_device_profile.noise_suppressor.effect_id;
+    ESP_LOGI(TAG, "NS 0x%02X available=1 avail_flag=%d effect_type=%d catalog_idx=0x%02X",
+             ns_id, s_device_profile.noise_suppressor.available,
+             s_device_profile.noise_suppressor.effect_type,
+             ns_id - 0x80);
 
     // The DSP rejects parameter writes while Noise Suppressor is disabled.
     if (!enable) return dsp_model_set_noise_suppressor(false);
@@ -1062,10 +1117,18 @@ esp_err_t dsp_model_set_noise_suppressor_state(bool enable,
         esp_err_t err = mvs_build_write_frame(ns_id, selector, values[selector],
                                               frame, sizeof(frame));
         if (err != ESP_OK) return err;
+        ESP_LOGI(TAG, "NS 0x%02X TX: A5 5A %02X 03 %02X %02X %02X 16 (sel=%d val=%d)",
+                 ns_id, ns_id, selector,
+                 frame[5], frame[6], selector, values[selector]);
         err = send_mvs_command(frame, sizeof(frame));
-        if (err != ESP_OK) return err;
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "NS 0x%02X sel=%d send failed: %s",
+                     ns_id, selector, esp_err_to_name(err));
+            return err;
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    ESP_LOGI(TAG, "NS 0x%02X apply done (err=ESP_OK)", ns_id);
     return ESP_OK;
 }
 
@@ -1092,6 +1155,10 @@ esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
 {
     if (!s_device_profile.virtual_bass.available) return ESP_ERR_NOT_SUPPORTED;
     uint8_t vb_id = s_device_profile.virtual_bass.effect_id;
+    ESP_LOGI(TAG, "VB 0x%02X available=1 avail_flag=%d effect_type=%d catalog_idx=0x%02X",
+             vb_id, s_device_profile.virtual_bass.available,
+             s_device_profile.virtual_bass.effect_type,
+             vb_id - 0x80);
 
     // Disabling is a single command. Parameter writes while disabled
     // can cause the DSP to reject the sequence.
@@ -1109,10 +1176,18 @@ esp_err_t dsp_model_set_virtual_bass_state(bool enable, uint16_t cutoff_hz,
         esp_err_t err = mvs_build_write_frame(vb_id, selectors[i], values[i],
                                               frame, sizeof(frame));
         if (err != ESP_OK) return err;
+        ESP_LOGI(TAG, "VB 0x%02X TX: A5 5A %02X 03 %02X %02X %02X 16 (sel=%d val=%d)",
+                 vb_id, vb_id, selectors[i],
+                 frame[5], frame[6], selectors[i], values[i]);
         err = send_mvs_command(frame, sizeof(frame));
-        if (err != ESP_OK) return err;
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "VB 0x%02X sel=%d send failed: %s",
+                     vb_id, selectors[i], esp_err_to_name(err));
+            return err;
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    ESP_LOGI(TAG, "VB 0x%02X apply done (err=ESP_OK)", vb_id);
     return ESP_OK;
 }
 
