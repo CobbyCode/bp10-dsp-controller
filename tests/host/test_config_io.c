@@ -25,6 +25,17 @@ void dsp_model_get_profile(dsp_profile_t *profile)
     *profile = runtime_profile;
 }
 
+void dsp_model_get_multi_config(dsp_multi_config_t *config)
+{
+    memset(config, 0, sizeof(*config));
+    config->schema_version = 2;
+    config->music = runtime_profile;
+    if (active_device.paths[MVS_PATH_REC].present) {
+        config->rec = runtime_profile;
+        config->rec_valid = true;
+    }
+}
+
 bool dsp_model_get_default_profile(dsp_profile_t *profile)
 {
     if (active_device.kind != MVS_DEVICE_A800X_FIXED) return false;
@@ -40,12 +51,14 @@ esp_err_t nvs_settings_load_a800x_config(dsp_profile_t *profile)
 }
 
 esp_err_t nvs_settings_load_generic_config(
-    const mvs_schema_fingerprint_t *fingerprint, dsp_profile_t *profile)
+    const mvs_schema_fingerprint_t *fingerprint, dsp_multi_config_t *config)
 {
     if (!have_generic ||
         !mvs_fingerprint_equal(fingerprint, &active_device.schema_fingerprint))
         return ESP_ERR_NOT_FOUND;
-    *profile = generic_saved;
+    config->music = generic_saved;
+    config->schema_version = 2;
+    config->rec_valid = false;
     return ESP_OK;
 }
 
@@ -88,9 +101,7 @@ static dsp_profile_t sample_profile(unsigned marker)
 
 static void set_a800x(void)
 {
-    memset(&active_device, 0, sizeof(active_device));
-    active_device.valid = true;
-    active_device.kind = MVS_DEVICE_A800X_FIXED;
+    mvs_device_profile_set_a800x(&active_device);
 }
 
 static void set_generic(void)
@@ -99,6 +110,13 @@ static void set_generic(void)
     active_device.valid = true;
     active_device.kind = MVS_DEVICE_GENERIC_ACP;
     active_device.fingerprint_valid = true;
+    active_device.path_count = 1;
+    active_device.paths[MVS_PATH_MUSIC].present = true;
+    active_device.paths[MVS_PATH_MUSIC].path_id = MVS_PATH_MUSIC;
+    active_device.paths[MVS_PATH_MUSIC].noise_suppressor.available = true;
+    active_device.paths[MVS_PATH_MUSIC].virtual_bass.available = true;
+    active_device.paths[MVS_PATH_MUSIC].preeq.available = true;
+    active_device.paths[MVS_PATH_MUSIC].drc.available = true;
     active_device.schema_fingerprint = (mvs_schema_fingerprint_t) {
         .vid = 0x8888, .pid = 0x1719,
         .adapter_kind = MVS_DEVICE_GENERIC_ACP,
@@ -182,11 +200,75 @@ static void test_format_version_rejected(void)
     free(json);
 }
 
+static void test_delay_export_capability(void)
+{
+    // Setup: Generic-Profil MIT aktivierter Music-Delay-Capability
+    set_generic();
+    have_generic = true;
+    generic_saved = sample_profile(7);
+    runtime_profile = generic_saved;
+
+    // Music-Pfad mit Delay-Capability ausstatten
+    active_device.path_count = 1;
+    active_device.paths[MVS_PATH_MUSIC].present = true;
+    active_device.paths[MVS_PATH_MUSIC].path_id = MVS_PATH_MUSIC;
+    active_device.paths[MVS_PATH_MUSIC].delay_hq.available = true;
+
+    // Export
+    char *json = NULL;
+    dsp_profile_t parsed;
+    assert(config_io_export(&json) == ESP_OK);
+    // Delay-Capability verfügbar → music_delay muss im JSON sein
+    assert(strstr(json, "\"music_delay\""));
+
+    // Runtime ändern, dann importieren
+    runtime_profile = sample_profile(20);
+    assert(config_io_parse_import(json, &parsed) == ESP_OK);
+    // Mit Capability: delay_ms kommt aus dem JSON (sample_profile(7) → 27)
+    assert(parsed.delay_ms == 27);
+
+    free(json);
+}
+
+static void test_bass_path_isolation(void)
+{
+    // Setup: Generic-Profil mit beiden Pfaden und getrennten Bass-Capabilities
+    set_generic();
+    have_generic = true;
+    generic_saved = sample_profile(7);
+    runtime_profile = generic_saved;
+
+    active_device.path_count = 2;
+    active_device.paths[MVS_PATH_MUSIC].present = true;
+    active_device.paths[MVS_PATH_MUSIC].path_id = MVS_PATH_MUSIC;
+    active_device.paths[MVS_PATH_MUSIC].virtual_bass.available = true;
+    active_device.paths[MVS_PATH_MUSIC].virtual_bass.effect_id = 0x86;
+    active_device.paths[MVS_PATH_REC].present = true;
+    active_device.paths[MVS_PATH_REC].path_id = MVS_PATH_REC;
+    active_device.paths[MVS_PATH_REC].virtual_bass.available = true;
+    active_device.paths[MVS_PATH_REC].virtual_bass.effect_id = 0x87;
+
+    // Export: Beide Pfade haben Virtual Bass Capability → Feld muss im JSON sein
+    char *json = NULL;
+    assert(config_io_export(&json) == ESP_OK);
+    assert(strstr(json, "\"virtual_bass\""));
+
+    // Import via multi-config: Music- und REC-Profile getrennt
+    dsp_multi_config_t mc = {0};
+    assert(config_io_parse_import_multi(json, &mc) == ESP_OK);
+    // Music-Bass aus sample_profile(7) → cutoff_hz = 47 (40 + marker 7)
+    assert(mc.music.virtual_bass_cutoff_hz == 47);
+
+    free(json);
+}
+
 int main(void)
 {
     test_a800x_roundtrip();
     test_generic_roundtrip_and_fingerprint();
     test_format_version_rejected();
+    test_delay_export_capability();
+    test_bass_path_isolation();
     puts("config_io_host_tests: PASS");
     return 0;
 }

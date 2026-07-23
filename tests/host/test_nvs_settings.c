@@ -5,6 +5,10 @@
 #include "nvs.h"
 #include "nvs_settings.h"
 
+#ifndef DSP_CONFIG_SCHEMA_VERSION
+#define DSP_CONFIG_SCHEMA_VERSION 2
+#endif
+
 #define SLOT_COUNT 32
 #define VALUE_MAX 1024
 typedef struct { bool used; char key[16]; size_t len; unsigned char value[VALUE_MAX]; } slot_t;
@@ -46,6 +50,14 @@ static dsp_profile_t sample_profile(unsigned marker)
     return p;
 }
 
+static dsp_multi_config_t sample_multi(unsigned marker)
+{
+    dsp_multi_config_t m = { .schema_version = DSP_CONFIG_SCHEMA_VERSION };
+    m.music = sample_profile(marker);
+    m.rec_valid = false;
+    return m;
+}
+
 static mvs_schema_fingerprint_t fingerprint(uint16_t vid, uint16_t pid,
                                             uint8_t adapter, uint16_t module)
 {
@@ -70,7 +82,8 @@ static void test_legacy_migrates_once(void)
 static void test_separation_and_fingerprint_matching(void)
 {
     nvs_erase_all(1);
-    dsp_profile_t a800x=sample_profile(31), generic=sample_profile(41), loaded;
+    dsp_profile_t a800x=sample_profile(31);
+    dsp_multi_config_t generic=sample_multi(41), loaded;
     mvs_schema_fingerprint_t fp=fingerprint(0x8888,0x1719,MVS_DEVICE_GENERIC_ACP,5);
     assert(nvs_settings_save_a800x_config(&a800x)==ESP_OK);
     assert(nvs_settings_load_generic_config(&fp,&loaded)==ESP_ERR_NOT_FOUND);
@@ -89,12 +102,13 @@ static void test_separation_and_fingerprint_matching(void)
 
 static void test_factory_reset(void)
 {
-    dsp_profile_t p=sample_profile(51), loaded;
+    dsp_profile_t p=sample_profile(51);
+    dsp_multi_config_t gm=sample_multi(51), loaded;
     mvs_schema_fingerprint_t fp=fingerprint(0x8888,0x1719,MVS_DEVICE_GENERIC_ACP,5);
     nvs_erase_all(1);
     assert(nvs_settings_save_dsp_config(&p)==ESP_OK);
     assert(nvs_settings_save_a800x_config(&p)==ESP_OK);
-    assert(nvs_settings_save_generic_config(&fp,&p)==ESP_OK);
+    assert(nvs_settings_save_generic_config(&fp,&gm)==ESP_OK);
     assert(nvs_settings_factory_reset()==ESP_OK);
     assert(!nvs_settings_has_dsp_config() && !nvs_settings_has_a800x_config());
     assert(nvs_settings_load_generic_config(&fp,&loaded)==ESP_ERR_NOT_FOUND);
@@ -114,12 +128,12 @@ static void test_legacy_profile_prefix_is_safe(void)
 
 static void test_restore_gate_has_no_writes_on_mismatch(void)
 {
-    dsp_profile_t p=sample_profile(61), loaded;
+    dsp_multi_config_t gm=sample_multi(61), loaded;
     mvs_schema_fingerprint_t saved=fingerprint(0x8888,0x1719,MVS_DEVICE_GENERIC_ACP,5);
     mvs_schema_fingerprint_t discovered=fingerprint(0x8888,0x1719,MVS_DEVICE_GENERIC_ACP,13);
     unsigned dsp_writes=0;
     nvs_erase_all(1);
-    assert(nvs_settings_save_generic_config(&saved,&p)==ESP_OK);
+    assert(nvs_settings_save_generic_config(&saved,&gm)==ESP_OK);
     if (nvs_settings_load_generic_config(&discovered,&loaded)==ESP_OK) dsp_writes++;
     assert(dsp_writes==0);
     discovered=saved;
