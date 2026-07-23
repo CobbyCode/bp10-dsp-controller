@@ -56,7 +56,7 @@ void mvs_device_profile_begin_generic(mvs_device_profile_t *profile,
     profile->paths[MVS_PATH_MUSIC].path_id = MVS_PATH_MUSIC;
     profile->paths[MVS_PATH_MUSIC].label = "Music";
     profile->paths[MVS_PATH_REC].path_id = MVS_PATH_REC;
-    profile->paths[MVS_PATH_REC].label = "REC";
+    profile->paths[MVS_PATH_REC].label = "Rec";
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ const char *mvs_path_label(mvs_path_id_t path_id)
 {
     switch (path_id) {
         case MVS_PATH_MUSIC: return "Music";
-        case MVS_PATH_REC:   return "REC";
+        case MVS_PATH_REC:   return "Rec";
         default:             return NULL;
     }
 }

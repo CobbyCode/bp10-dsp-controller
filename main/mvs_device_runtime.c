@@ -240,7 +240,7 @@ esp_err_t mvs_device_runtime_identify(void)
                           rec->usb_out_gain.effect_id;
         if (rec_mapped) {
             rec->present = true;
-            rec->label = "REC";
+            rec->label = "Rec";
             rec->path_id = MVS_PATH_REC;
         }
 

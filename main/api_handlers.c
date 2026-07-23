@@ -921,9 +921,14 @@ static esp_err_t handler_dsp_phase_post(httpd_req_t *req)
     cJSON *invert = cJSON_GetObjectItem(json, "invert");
     if (!cJSON_IsBool(invert)) { cJSON_Delete(json); return send_error(req, 400, "Missing invert"); }
     bool requested = cJSON_IsTrue(invert); cJSON_Delete(json);
+    ESP_LOGI(TAG, "Phase verify path=Music effect=0x%02X expected=%d",
+             dsp_model_get_device_profile()->phase.effect_id, requested);
     esp_err_t err = dsp_model_set_phase(requested);
     bool confirmed = false;
     if (err == ESP_OK) err = dsp_model_read_phase(&confirmed);
+    ESP_LOGI(TAG, "Phase verify path=Music effect=0x%02X expected=%d actual=%d err=%s",
+             dsp_model_get_device_profile()->phase.effect_id, requested,
+             confirmed, esp_err_to_name(err));
     if (err != ESP_OK || confirmed != requested)
         return send_error(req, 500, "Music Phase readback mismatch");
 
@@ -956,11 +961,18 @@ static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
     }
     bool requested = cJSON_IsTrue(enable), requested_hq = cJSON_IsTrue(hq);
     uint16_t requested_delay = (uint16_t)delay->valuedouble; cJSON_Delete(json);
+    ESP_LOGI(TAG, "Delay verify path=%s effect=0x%02X expected={enabled:%d,delay:%u,hq:%d}",
+             path->label, path->delay_hq.effect_id, requested,
+             requested_delay, requested_hq);
     esp_err_t err = dsp_model_set_delay_path(
         path_id, requested, requested_delay, requested_hq);
     bool confirmed = false, confirmed_hq = false; uint16_t confirmed_delay = 0;
     if (err == ESP_OK) err = dsp_model_read_delay_path(
         path_id, &confirmed, &confirmed_delay, &confirmed_hq);
+    ESP_LOGI(TAG, "Delay verify path=%s effect=0x%02X expected={enabled:%d,delay:%u,hq:%d} actual={enabled:%d,delay:%u,hq:%d} err=%s",
+             path->label, path->delay_hq.effect_id, requested,
+             requested_delay, requested_hq, confirmed, confirmed_delay,
+             confirmed_hq, esp_err_to_name(err));
     if (err != ESP_OK || confirmed != requested)
         return send_error(req, 500, "Music Delay readback mismatch");
     // Only verify params when enabled; DSP may normalize/zero params when OFF
@@ -978,8 +990,10 @@ static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed);
-    cJSON_AddNumberToObject(result, "delay_ms", confirmed_delay);
-    cJSON_AddBoolToObject(result, "hq_enabled", confirmed_hq);
+    cJSON_AddNumberToObject(result, "delay_ms",
+                            requested ? confirmed_delay : requested_delay);
+    cJSON_AddBoolToObject(result, "hq_enabled",
+                          requested ? confirmed_hq : requested_hq);
     cJSON_AddBoolToObject(result, "confirmed", true);
     return send_dsp_response(req, result, save_err);
 }

@@ -205,7 +205,7 @@ static void dsp_boot_apply_task(void *arg)
     if (!device->valid) return;
     if (device->kind == MVS_DEVICE_GENERIC_ACP) {
         if (device->fingerprint_valid) {
-            dsp_multi_config_t saved;
+            static dsp_multi_config_t saved;
             esp_err_t gerr = nvs_settings_load_generic_config(
                 &device->schema_fingerprint, &saved);
             if (gerr == ESP_OK) {
@@ -219,7 +219,7 @@ static void dsp_boot_apply_task(void *arg)
                 dsp_model_commit_multi_config(&saved);
                 vTaskDelay(pdMS_TO_TICKS(200));
                 // Kurzer Readback zur Bestätigung
-                dsp_multi_config_t rb;
+                static dsp_multi_config_t rb;
                 if (dsp_model_readback_multi(&rb) == ESP_OK) {
                     g_dsp_ns_state = rb.music.noise_suppressor_enabled;
                 }
@@ -241,7 +241,7 @@ static void dsp_boot_apply_task(void *arg)
         return;
     }
 
-    dsp_profile_t saved;
+    static dsp_profile_t saved;
     esp_err_t err = nvs_settings_load_a800x_config(&saved);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS-Konfiguration laden fehlgeschlagen: %s – "
@@ -268,7 +268,7 @@ static void dsp_boot_apply_task(void *arg)
     int fail_count = 0;
 
     // Noise Suppressor
-    dsp_profile_t readback;
+    static dsp_profile_t readback;
     err = dsp_model_readback(&readback);
     if (err == ESP_OK) {
         bool ns_ok = (readback.noise_suppressor_enabled == saved.noise_suppressor_enabled);
@@ -282,7 +282,7 @@ static void dsp_boot_apply_task(void *arg)
 
     // Virtual Bass (separater Readback falls Voll-Readback fehlschlug)
     {
-        dsp_profile_t vb_check;
+        static dsp_profile_t vb_check;
         err = dsp_model_readback(&vb_check);
         if (err == ESP_OK) {
             bool vb_ok = (vb_check.virtual_bass_enabled == saved.virtual_bass_enabled);

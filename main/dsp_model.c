@@ -368,6 +368,10 @@ esp_err_t dsp_model_readback_path(mvs_path_id_t path_id, dsp_profile_t *profile)
         &s_device_profile, path_id);
     if (!path) return ESP_ERR_NOT_SUPPORTED;
 
+    const dsp_profile_t *stored = path_id == MVS_PATH_REC
+        ? &s_rec_profile : &s_music_profile;
+    uint16_t stored_delay_ms = stored->delay_ms;
+    bool stored_delay_hq = stored->delay_hq_enabled;
     memset(profile, 0, sizeof(*profile));
     ESP_LOGI(TAG, "Lese DSP-Zustand aus (Pfad: %s)...", path->label);
 
@@ -430,6 +434,10 @@ esp_err_t dsp_model_readback_path(mvs_path_id_t path_id, dsp_profile_t *profile)
         err = dsp_model_read_delay_path(path_id, &profile->delay_enabled,
             &profile->delay_ms, &profile->delay_hq_enabled);
         if (err != ESP_OK) extended_ok = false;
+        else if (!profile->delay_enabled) {
+            profile->delay_ms = stored_delay_ms;
+            profile->delay_hq_enabled = stored_delay_hq;
+        }
     }
     profile->phase2_extended_valid = extended_present && extended_ok;
 
@@ -1079,8 +1087,21 @@ esp_err_t dsp_model_read_delay_path(mvs_path_id_t path_id,
     vTaskDelay(pdMS_TO_TICKS(50));
     err = usb_host_ctrl_get_report(report, &report_len);
     if (err != ESP_OK) return err;
-    if (report_len < 14) return ESP_ERR_INVALID_RESPONSE;
-    return mvs_decode_delay(report + 5, report_len - 6, enable, delay_ms, hq_enabled);
+    uint8_t wire_len = report_len >= 4 ? report[3] : 0;
+    ESP_LOGI(TAG, "Delay raw path=%s effect=0x%02X report_len=%u wire_len=%u",
+             path->label, delay_id, report_len, wire_len);
+    size_t raw_len = (size_t)wire_len + 5U <= report_len
+        ? (size_t)wire_len + 5U : report_len;
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, report,
+        raw_len < sizeof(report) ? raw_len : sizeof(report), ESP_LOG_INFO);
+    if (report_len < 14 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 || report[2] != delay_id ||
+        report[4] != 0xFF || wire_len != 9 ||
+        (size_t)wire_len + 5U > report_len ||
+        report[4U + wire_len] != MVS_FRAME_TERMINATOR)
+        return ESP_ERR_INVALID_RESPONSE;
+    return mvs_decode_delay(report + 5, wire_len - 1U,
+                            enable, delay_ms, hq_enabled);
 }
 
 esp_err_t dsp_model_set_delay(bool enable, uint16_t delay_ms, bool hq_enabled)
@@ -1303,8 +1324,20 @@ esp_err_t dsp_model_read_phase(bool *phase_invert)
     vTaskDelay(pdMS_TO_TICKS(50));
     err = usb_host_ctrl_get_report(report, &report_len);
     if (err != ESP_OK) return err;
-    if (report_len < 7) return ESP_ERR_INVALID_RESPONSE;
-    return mvs_decode_phase(report + 5, report_len - 6, phase_invert);
+    uint8_t wire_len = report_len >= 4 ? report[3] : 0;
+    ESP_LOGI(TAG, "Phase raw path=Music effect=0x%02X report_len=%u wire_len=%u",
+             phase_id, report_len, wire_len);
+    size_t raw_len = (size_t)wire_len + 5U <= report_len
+        ? (size_t)wire_len + 5U : report_len;
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, report,
+        raw_len < sizeof(report) ? raw_len : sizeof(report), ESP_LOG_INFO);
+    if (report_len < 8 || report[0] != MVS_FRAME_MAGIC_1 ||
+        report[1] != MVS_FRAME_MAGIC_2 || report[2] != phase_id ||
+        report[4] != 0xFF || (wire_len != 3 && wire_len != 5) ||
+        (size_t)wire_len + 5U > report_len ||
+        report[4U + wire_len] != MVS_FRAME_TERMINATOR)
+        return ESP_ERR_INVALID_RESPONSE;
+    return mvs_decode_phase(report + 5, wire_len - 1U, phase_invert);
 }
 
 esp_err_t dsp_model_set_phase(bool phase_invert)
@@ -1312,7 +1345,9 @@ esp_err_t dsp_model_set_phase(bool phase_invert)
     if (!s_device_profile.phase.available) return ESP_ERR_NOT_SUPPORTED;
     uint8_t phase_id = s_device_profile.phase.effect_id;
     uint8_t frame[8];
-    esp_err_t err = mvs_build_write_frame(phase_id, 0, phase_invert ? 1 : 0,
+    uint8_t selector = s_device_profile.phase.state_size == 4 ? 1U : 0U;
+    esp_err_t err = mvs_build_write_frame(phase_id, selector,
+                                           phase_invert ? 1 : 0,
                                            frame, sizeof(frame));
     if (err != ESP_OK) return err;
     return send_mvs_command(frame, sizeof(frame));
