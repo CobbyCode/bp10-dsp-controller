@@ -1,3 +1,10 @@
+// SPDX-FileCopyrightText: 2026 PaulsKlaue
+// SPDX-License-Identifier: MIT
+//
+// mvs_device_runtime.c — MVSilicon-Geräteerkennung und Profilaufbau
+//
+// v2: Multi-Path-Discovery (Music + REC)
+
 #include "mvs_device_runtime.h"
 
 #include <string.h>
@@ -102,14 +109,16 @@ static esp_err_t discover_catalog(mvs_device_profile_t *profile,
 }
 
 static void validate_module(mvs_device_profile_t *profile,
-                            mvs_module_kind_t module, mvs_effect_ref_t *effect)
+                            mvs_path_id_t path_id,
+                            mvs_effect_ref_t *effect_ref,
+                            mvs_module_kind_t module)
 {
-    if (!effect || effect->effect_id == 0) return;
+    if (!effect_ref || effect_ref->effect_id == 0) return;
     uint8_t response[256];
     uint16_t response_len = 0;
     const uint8_t *state = NULL;
     uint16_t state_len = 0;
-    esp_err_t err = read_effect_state(effect->effect_id, response, &response_len,
+    esp_err_t err = read_effect_state(effect_ref->effect_id, response, &response_len,
                                       &state, &state_len);
     bool valid = err == ESP_OK;
     if (valid && module == MVS_MODULE_NOISE_SUPPRESSOR) {
@@ -130,7 +139,7 @@ static void validate_module(mvs_device_profile_t *profile,
     } else if (valid && module == MVS_MODULE_DELAY_HQ) {
         bool enabled, hq; uint16_t delay;
         valid = mvs_decode_delay(state, state_len, &enabled, &delay, &hq) == ESP_OK;
-    } else if (valid && module == MVS_MODULE_PREEQ) {
+    } else if (valid && (module == MVS_MODULE_PREEQ || module == MVS_MODULE_OUT_EQ)) {
         mvs_preeq_state_t peq;
         valid = mvs_decode_preeq(state, state_len, &peq) == ESP_OK;
     } else if (valid && module == MVS_MODULE_DRC) {
@@ -141,11 +150,52 @@ static void validate_module(mvs_device_profile_t *profile,
             mvs_drc_packed_state_t drc;
             valid = mvs_decode_drc_a800x(state, state_len, &drc) == ESP_OK;
         } else valid = false;
+    } else if (valid && module == MVS_MODULE_USB_OUT_GAIN) {
+        uint16_t gain_raw = 0;
+        valid = mvs_decode_usb_out_gain(state, state_len, &gain_raw) == ESP_OK;
     }
-    mvs_device_profile_set_module_validated(profile, module, valid, state_len);
-    ESP_LOGI(TAG, "Module 0x%02X validation: %s (%u bytes) err=%s", effect->effect_id,
-             valid ? "ok" : "disabled", state_len,
+    bool stored = mvs_device_profile_set_module_validated(
+        profile, path_id, effect_ref, module, valid, state_len);
+    ESP_LOGI(TAG, "%s module 0x%02X validation: %s (%u bytes) err=%s",
+             mvs_path_label(path_id), effect_ref->effect_id,
+             stored && valid ? "ok" : "disabled", state_len,
              err == ESP_OK ? "ok" : "read_fail");
+    if (!stored || !valid) {
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, response, response_len, ESP_LOG_WARN);
+    }
+}
+
+static void validate_path_modules(mvs_device_profile_t *profile,
+                                  mvs_path_id_t path_id)
+{
+    mvs_effect_path_t *path = &profile->paths[path_id];
+    if (!path->present) return;
+
+    // Basismodule
+    if (path->noise_suppressor.effect_id != 0)
+        validate_module(profile, path_id, &path->noise_suppressor,
+                        MVS_MODULE_NOISE_SUPPRESSOR);
+    if (path->virtual_bass.effect_id != 0)
+        validate_module(profile, path_id, &path->virtual_bass,
+                        MVS_MODULE_VIRTUAL_BASS);
+    if (path->preeq.effect_id != 0)
+        validate_module(profile, path_id, &path->preeq, MVS_MODULE_PREEQ);
+    if (path->out_eq.effect_id != 0)
+        validate_module(profile, path_id, &path->out_eq, MVS_MODULE_OUT_EQ);
+    if (path->drc.effect_id != 0)
+        validate_module(profile, path_id, &path->drc, MVS_MODULE_DRC);
+
+    // Erweiterte Module
+    if (path->virtual_bass_classic.effect_id != 0)
+        validate_module(profile, path_id, &path->virtual_bass_classic,
+                        MVS_MODULE_VIRTUAL_BASS_CLASSIC);
+    if (path->phase.effect_id != 0)
+        validate_module(profile, path_id, &path->phase, MVS_MODULE_PHASE);
+    if (path->delay_hq.effect_id != 0)
+        validate_module(profile, path_id, &path->delay_hq, MVS_MODULE_DELAY_HQ);
+    if (path->usb_out_gain.effect_id != 0)
+        validate_module(profile, path_id, &path->usb_out_gain,
+                        MVS_MODULE_USB_OUT_GAIN);
 }
 
 void mvs_device_runtime_clear(void)
@@ -174,26 +224,52 @@ esp_err_t mvs_device_runtime_identify(void)
     } else if (transport.kind == MVS_USB_PROFILE_GENERIC_CLASSIC) {
         err = discover_catalog(&profile, &transport);
         if (err != ESP_OK) return err;
-        validate_module(&profile, MVS_MODULE_NOISE_SUPPRESSOR,
-                        &profile.noise_suppressor);
-        validate_module(&profile, MVS_MODULE_VIRTUAL_BASS,
-                        &profile.virtual_bass);
-        validate_module(&profile, MVS_MODULE_PREEQ, &profile.preeq);
-        validate_module(&profile, MVS_MODULE_DRC, &profile.drc);
-        if (profile.virtual_bass_classic.effect_id != 0) {
-            validate_module(&profile, MVS_MODULE_VIRTUAL_BASS_CLASSIC,
-                            &profile.virtual_bass_classic);
+
+        // Music-Pfad immer aktivieren (wird durch Catalog-Mapping entdeckt)
+        mvs_effect_path_t *music = &profile.paths[MVS_PATH_MUSIC];
+        music->present = true;
+        music->label = "Music";
+        music->path_id = MVS_PATH_MUSIC;
+
+        // REC-Pfad-Kandidaten prüfen
+        mvs_effect_path_t *rec = &profile.paths[MVS_PATH_REC];
+        // REC ist nur present wenn mindestens ein REC-Effekt gemappt wurde
+        bool rec_mapped = rec->virtual_bass.effect_id || rec->virtual_bass_classic.effect_id ||
+                          rec->delay_hq.effect_id || rec->drc.effect_id ||
+                          rec->preeq.effect_id || rec->out_eq.effect_id ||
+                          rec->usb_out_gain.effect_id;
+        if (rec_mapped) {
+            rec->present = true;
+            rec->label = "REC";
+            rec->path_id = MVS_PATH_REC;
         }
-        if (profile.phase.effect_id != 0)
-            validate_module(&profile, MVS_MODULE_PHASE, &profile.phase);
-        if (profile.delay_hq.effect_id != 0)
-            validate_module(&profile, MVS_MODULE_DELAY_HQ, &profile.delay_hq);
-        if (profile.usb_out_gain.effect_id != 0)
-            validate_module(&profile, MVS_MODULE_USB_OUT_GAIN,
-                            &profile.usb_out_gain);
+
+        // Alle Pfade validieren (Music zuerst, dann REC)
+        validate_path_modules(&profile, MVS_PATH_MUSIC);
+        if (rec->present) validate_path_modules(&profile, MVS_PATH_REC);
+
         if (!profile.valid) return ESP_ERR_NOT_SUPPORTED;
 
-        // Schema-Fingerprint berechnen (nur Struktur, keine Adressen)
+        // Legacy-Kompatibilitätsfelder aus Music-Pfad kopieren
+        if (music->present) {
+            profile.noise_suppressor = music->noise_suppressor;
+            profile.virtual_bass = music->virtual_bass;
+            profile.preeq = music->preeq;
+            profile.drc = music->drc;
+            profile.silence_detector = music->silence_detector;
+            profile.virtual_bass_classic = music->virtual_bass_classic;
+            profile.phase = music->phase;
+            profile.delay_hq = music->delay_hq;
+            profile.usb_out_gain = music->usb_out_gain;
+            profile.has_virtual_bass_classic = music->has_virtual_bass_classic;
+            profile.has_phase = music->has_phase;
+            profile.has_delay_hq = music->has_delay_hq;
+            profile.has_usb_out_gain = music->has_usb_out_gain;
+            profile.preeq_schema = music->preeq_schema;
+            profile.drc_schema = music->drc_schema;
+        }
+
+        // Schema-Fingerprint berechnen
         mvs_device_profile_compute_fingerprint(&profile);
     } else {
         return ESP_ERR_NOT_SUPPORTED;
@@ -202,6 +278,6 @@ esp_err_t mvs_device_runtime_identify(void)
     mvs_device_profile_publish(&profile);
     dsp_model_set_device_profile(&profile);
     s_ready = true;
-    ESP_LOGI(TAG, "DSP profile ready: kind=%d", profile.kind);
+    ESP_LOGI(TAG, "DSP profile ready: kind=%d paths=%u", profile.kind, profile.path_count);
     return ESP_OK;
 }

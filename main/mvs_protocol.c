@@ -513,6 +513,20 @@ void mvs_prepare_preeq_for_schema(mvs_preeq_schema_t schema,
 }
 
 // ---------------------------------------------------------------------------
+// USB Out Gain Decoder
+// ---------------------------------------------------------------------------
+
+esp_err_t mvs_decode_usb_out_gain(const uint8_t *data, uint16_t length,
+                                   uint16_t *gain_raw)
+{
+    // Format: <enable/bypass:u16> <reserved:u16> <gain:u16>
+    // Only the third field is the Q4.12 linear gain coefficient.
+    if (!data || !gain_raw || length != 6) return ESP_ERR_INVALID_SIZE;
+    *gain_raw = read_u16_le(data + 4);
+    return ESP_OK;
+}
+
+// ---------------------------------------------------------------------------
 // Validierung
 // ---------------------------------------------------------------------------
 

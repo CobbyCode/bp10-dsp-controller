@@ -69,21 +69,63 @@ static void test_catalog(void)
     assert(mvs_device_profile_map_catalog_entry(&p, 15, 2, "Music DRC"));
     assert(mvs_device_profile_map_catalog_entry(&p, 17, 4, "Music Pre EQ"));
     // VB Classic: Phase 1 Mapping (eff_type 13, anderer Name als VB)
-    assert(mvs_device_profile_map_catalog_entry(&p, 7, 13, "Music Virtual Bass Classic"));
-    assert(p.virtual_bass_classic.effect_id == 0x87);
+    assert(mvs_device_profile_map_catalog_entry(&p, 8, 13, "Music Virtual Bass Clas"));
+    // Zugriff über den Pfad, da der Mapper paths[MUSIC] befüllt,
+    // das Legacy-Top-Level-Feld aber erst in set_module_validated synchronisiert wird.
+    assert(p.paths[MVS_PATH_MUSIC].virtual_bass_classic.effect_id == 0x88);
     assert(mvs_device_profile_map_catalog_entry(&p, 11, 24, "Music Delay"));
     assert(mvs_device_profile_map_catalog_entry(&p, 14, 20, "Music Phase"));
     // Doppelter Aufruf für gleichen Index liefert false (Slot bereits belegt)
-    assert(!mvs_device_profile_map_catalog_entry(&p, 7, 13, "Music Virtual Bass Classic"));
-    assert(p.noise_suppressor.effect_id == 0x81 && p.virtual_bass.effect_id == 0x86 &&
-           p.drc.effect_id == 0x8F && p.preeq.effect_id == 0x91);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_NOISE_SUPPRESSOR, true, 10);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_VIRTUAL_BASS, true, 8);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_DRC, true, 38);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_PREEQ, true, 106);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 6);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_DELAY_HQ, true, 8);
-    mvs_device_profile_set_module_validated(&p, MVS_MODULE_PHASE, true, 4);
+    assert(!mvs_device_profile_map_catalog_entry(&p, 8, 13, "Music Virtual Bass Clas"));
+    // Bestätigter Generic-BP1048-Katalog.
+    assert(mvs_device_profile_map_catalog_entry(&p, 7, 13, "Rec Virtual Bass"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 9, 13, "Rec Virtual Bass Clas"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 12, 24, "Rec Delay"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 16, 2, "Rec DRC"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 18, 4, "Music Out EQ"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 19, 4, "Rec Pre EQ"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 20, 4, "Rec Out EQ"));
+    assert(mvs_device_profile_map_catalog_entry(&p, 22, 96, "USB Out Gain"));
+    assert(p.paths[MVS_PATH_REC].virtual_bass.effect_id == 0x87);
+    assert(p.paths[MVS_PATH_REC].virtual_bass_classic.effect_id == 0x89);
+    assert(p.paths[MVS_PATH_REC].delay_hq.effect_id == 0x8C);
+    assert(p.paths[MVS_PATH_REC].drc.effect_id == 0x90);
+    assert(p.paths[MVS_PATH_MUSIC].out_eq.effect_id == 0x92);
+    assert(p.paths[MVS_PATH_REC].preeq.effect_id == 0x93);
+    assert(p.paths[MVS_PATH_REC].out_eq.effect_id == 0x94);
+    assert(p.paths[MVS_PATH_REC].usb_out_gain.effect_id == 0x96);
+    assert(p.paths[MVS_PATH_REC].virtual_bass_classic.effect_id == 0x89);
+    assert(p.paths[MVS_PATH_MUSIC].virtual_bass_classic.effect_id == 0x88);
+    assert(p.paths[MVS_PATH_REC].virtual_bass_classic.effect_id != p.paths[MVS_PATH_MUSIC].virtual_bass_classic.effect_id);
+    // Top-Level-Legacy-Felder erst nach map (vor validate)
+    assert(p.paths[MVS_PATH_MUSIC].noise_suppressor.effect_id == 0x81
+           && p.paths[MVS_PATH_MUSIC].virtual_bass.effect_id == 0x86
+           && p.paths[MVS_PATH_MUSIC].drc.effect_id == 0x8F
+           && p.paths[MVS_PATH_MUSIC].preeq.effect_id == 0x91);
+    mvs_effect_path_t *music = &p.paths[MVS_PATH_MUSIC];
+    mvs_effect_path_t *rec = &p.paths[MVS_PATH_REC];
+    music->present = true;
+    rec->present = true;
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_MUSIC,
+        &music->noise_suppressor, MVS_MODULE_NOISE_SUPPRESSOR, true, 10));
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_MUSIC,
+        &music->virtual_bass, MVS_MODULE_VIRTUAL_BASS, true, 8));
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_MUSIC,
+        &music->drc, MVS_MODULE_DRC, true, 38));
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_MUSIC,
+        &music->preeq, MVS_MODULE_PREEQ, true, 106));
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_MUSIC,
+        &music->virtual_bass_classic, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 6));
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_MUSIC,
+        &music->delay_hq, MVS_MODULE_DELAY_HQ, true, 8));
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_MUSIC,
+        &music->phase, MVS_MODULE_PHASE, true, 4));
+    assert(mvs_device_profile_set_module_validated(&p, MVS_PATH_REC,
+        &rec->virtual_bass_classic, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 6));
+    assert(!mvs_device_profile_set_module_validated(&p, MVS_PATH_REC,
+        &music->virtual_bass_classic, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 6));
+    assert(rec->virtual_bass_classic.available);
+    assert(music->virtual_bass_classic.effect_id == 0x88);
     assert(p.valid && p.drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
            p.preeq_schema == MVS_PEQ_SCHEMA_CLASSIC_10BAND &&
            !p.silence_detector.available);
