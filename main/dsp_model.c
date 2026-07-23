@@ -445,13 +445,17 @@ esp_err_t dsp_model_readback_path(mvs_path_id_t path_id, dsp_profile_t *profile)
     }
 
     // DRC
+    profile->drc_readback_valid = false;
     if (path->drc.available) {
         if (path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
-            dsp_model_read_drc(&profile->drc);
+            profile->drc_readback_valid =
+                dsp_model_read_drc(&profile->drc) == ESP_OK;
         } else {
             dsp_drc_view_t view;
-            if (dsp_model_read_drc_view_path(path_id, &view) == ESP_OK)
+            if (dsp_model_read_drc_view_path(path_id, &view) == ESP_OK) {
                 store_drc_view(profile, &view);
+                profile->drc_readback_valid = true;
+            }
         }
     }
 
@@ -570,19 +574,38 @@ static esp_err_t read_drc_classic_id(uint8_t effect_id,
 {
     if (!state) return ESP_ERR_NOT_SUPPORTED;
     uint8_t frame[5], report[256];
-    uint16_t report_len = 0;
     mvs_build_query_frame(effect_id, frame, sizeof(frame));
-    mvs_prepare_hid_report(frame, sizeof(frame), report);
-    esp_err_t err = usb_host_ctrl_send_report(report, sizeof(report));
-    if (err != ESP_OK) return err;
-    vTaskDelay(pdMS_TO_TICKS(50));
-    err = usb_host_ctrl_get_report(report, &report_len);
-    if (err != ESP_OK) return err;
-    if (report_len < 44 || report[0] != MVS_FRAME_MAGIC_1 ||
-        report[1] != MVS_FRAME_MAGIC_2 || report[2] != effect_id ||
-        report[3] != 39 || report[4] != 0xFF || report[43] != MVS_FRAME_TERMINATOR)
-        return ESP_ERR_INVALID_RESPONSE;
-    return mvs_decode_drc_classic(report + 5, 38, state);
+    esp_err_t last_err = ESP_ERR_INVALID_RESPONSE;
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        uint16_t report_len = 0;
+        mvs_prepare_hid_report(frame, sizeof(frame), report);
+        esp_err_t err = usb_host_ctrl_send_report(report, sizeof(report));
+        if (err != ESP_OK) {
+            last_err = err;
+            continue;
+        }
+        vTaskDelay(pdMS_TO_TICKS(70));
+        err = usb_host_ctrl_get_report(report, &report_len);
+        if (err != ESP_OK) {
+            last_err = err;
+            continue;
+        }
+        uint8_t wire_len = report_len >= 4 ? report[3] : 0;
+        if (report_len >= 6 && report[0] == MVS_FRAME_MAGIC_1 &&
+            report[1] == MVS_FRAME_MAGIC_2 && report[2] == effect_id &&
+            wire_len == 39 && (size_t)wire_len + 5U <= report_len &&
+            report[4] == 0xFF &&
+            report[4U + wire_len] == MVS_FRAME_TERMINATOR) {
+            return mvs_decode_drc_classic(report + 5, 38, state);
+        }
+        ESP_LOGW(TAG, "DRC 0x%02X invalid read %u: len=%u wire=%u hdr=%02X %02X %02X %02X %02X",
+                 effect_id, attempt + 1U, report_len, wire_len, report[0],
+                 report[1], report[2], report[3], report[4]);
+        last_err = ESP_ERR_INVALID_RESPONSE;
+    }
+    ESP_LOGW(TAG, "DRC 0x%02X read failed after 3 attempts: %s",
+             effect_id, esp_err_to_name(last_err));
+    return last_err;
 }
 
 esp_err_t dsp_model_read_drc_view(dsp_drc_view_t *view)
@@ -611,6 +634,15 @@ esp_err_t dsp_model_read_drc_view_path(mvs_path_id_t path_id,
         return mvs_drc_classic_to_view(&state, view);
     }
     return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t dsp_model_profile_drc_view(const dsp_profile_t *profile,
+                                     dsp_drc_view_t *view)
+{
+    if (!profile || !view) return ESP_ERR_INVALID_ARG;
+    if (!profile->drc_readback_valid) return ESP_ERR_INVALID_RESPONSE;
+    load_drc_view(profile, view);
+    return ESP_OK;
 }
 
 static esp_err_t send_u16_array(uint8_t effect_id, uint8_t selector,

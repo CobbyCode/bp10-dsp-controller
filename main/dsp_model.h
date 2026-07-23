@@ -74,6 +74,9 @@ typedef struct {
 
     // Out EQ valid flag
     bool    out_eq_valid;
+
+    // Laufzeitstatus des letzten DRC-Readbacks.
+    bool    drc_readback_valid;
 } dsp_profile_t;
 
 // ---------------------------------------------------------------------------
@@ -225,6 +228,8 @@ esp_err_t dsp_model_update_drc(const mvs_drc_packed_state_t *state);
 esp_err_t dsp_model_update_drc_view_path(mvs_path_id_t path,
     const dsp_drc_view_t *requested, dsp_drc_view_t *confirmed);
 esp_err_t dsp_model_read_drc_view_path(mvs_path_id_t path,
+    dsp_drc_view_t *view);
+esp_err_t dsp_model_profile_drc_view(const dsp_profile_t *profile,
     dsp_drc_view_t *view);
 
 // USB Out Gain

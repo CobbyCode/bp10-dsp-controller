@@ -603,7 +603,7 @@ static esp_err_t handler_dsp_state_get(httpd_req_t *req)
 
     dsp_drc_view_t drc_view;
     bool drc_ok = path->drc.available &&
-                  dsp_model_read_drc_view_path(path_id, &drc_view) == ESP_OK;
+                  dsp_model_profile_drc_view(&profile, &drc_view) == ESP_OK;
     cJSON *drc = cJSON_AddObjectToObject(root, "drc");
     cJSON_AddBoolToObject(drc, "valid", drc_ok);
     if (drc_ok) {
