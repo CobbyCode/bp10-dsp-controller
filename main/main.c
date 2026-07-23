@@ -205,23 +205,23 @@ static void dsp_boot_apply_task(void *arg)
     if (!device->valid) return;
     if (device->kind == MVS_DEVICE_GENERIC_ACP) {
         if (device->fingerprint_valid) {
-            dsp_profile_t saved;
+            dsp_multi_config_t saved;
             esp_err_t gerr = nvs_settings_load_generic_config(
                 &device->schema_fingerprint, &saved);
             if (gerr == ESP_OK) {
                 ESP_LOGI(TAG, "Generic ACP: Fingerprint-Match – wende gespeicherte Konfiguration an");
-                esp_err_t apply_err = dsp_model_apply_profile(&saved);
+                esp_err_t apply_err = dsp_model_apply_multi_config(&saved);
                 if (apply_err != ESP_OK) {
                     ESP_LOGW(TAG, "Generic ACP: Restore fehlgeschlagen: %s",
                              esp_err_to_name(apply_err));
                     return;
                 }
-                dsp_model_commit_profile(&saved);
+                dsp_model_commit_multi_config(&saved);
                 vTaskDelay(pdMS_TO_TICKS(200));
                 // Kurzer Readback zur Bestätigung
-                dsp_profile_t rb;
-                if (dsp_model_readback(&rb) == ESP_OK) {
-                    g_dsp_ns_state = rb.noise_suppressor_enabled;
+                dsp_multi_config_t rb;
+                if (dsp_model_readback_multi(&rb) == ESP_OK) {
+                    g_dsp_ns_state = rb.music.noise_suppressor_enabled;
                 }
                 return;
             }
