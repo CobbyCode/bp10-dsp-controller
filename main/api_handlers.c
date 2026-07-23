@@ -52,6 +52,26 @@ static bool profile_supports_config_io(void)
              profile->fingerprint_valid));
 }
 
+static mvs_path_id_t request_path(httpd_req_t *req)
+{
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (device->kind == MVS_DEVICE_A800X_FIXED) return MVS_PATH_MUSIC;
+    char query[64];
+    char value[16];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "path", value, sizeof(value)) != ESP_OK)
+        return MVS_PATH_NONE;
+    mvs_path_id_t path_id = mvs_path_from_string(value);
+    return mvs_device_profile_get_path(device, path_id) ? path_id : MVS_PATH_NONE;
+}
+
+static void get_path_profile(mvs_path_id_t path_id, dsp_profile_t *out)
+{
+    dsp_multi_config_t config;
+    dsp_model_get_multi_config(&config);
+    *out = path_id == MVS_PATH_REC ? config.rec : config.music;
+}
+
 // ---------------------------------------------------------------------------
 // Hilfsfunktionen
 // ---------------------------------------------------------------------------
@@ -132,9 +152,48 @@ static esp_err_t commit_and_persist_profile(const dsp_profile_t *next)
         return nvs_settings_save_a800x_config(next);
     } else if (device->kind == MVS_DEVICE_GENERIC_ACP
                && device->fingerprint_valid) {
+        dsp_multi_config_t config;
+        dsp_model_get_multi_config(&config);
         return nvs_settings_save_generic_config(
-            &device->schema_fingerprint, next);
+            &device->schema_fingerprint, &config);
     }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+static esp_err_t commit_and_persist_path(mvs_path_id_t path_id,
+                                         const dsp_profile_t *next)
+{
+    if (!next) return ESP_ERR_INVALID_ARG;
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (!g_dsp_connected || !device->valid) return ESP_ERR_INVALID_STATE;
+    if (device->kind == MVS_DEVICE_A800X_FIXED) {
+        if (path_id != MVS_PATH_MUSIC) return ESP_ERR_NOT_SUPPORTED;
+        dsp_model_commit_profile(next);
+        return nvs_settings_save_a800x_config(next);
+    }
+    if (device->kind != MVS_DEVICE_GENERIC_ACP ||
+        !device->fingerprint_valid ||
+        !mvs_device_profile_get_path(device, path_id))
+        return ESP_ERR_NOT_SUPPORTED;
+    dsp_model_commit_path_profile(path_id, next);
+    dsp_multi_config_t config;
+    dsp_model_get_multi_config(&config);
+    return nvs_settings_save_generic_config(&device->schema_fingerprint,
+                                            &config);
+}
+
+static esp_err_t commit_and_persist_multi(const dsp_multi_config_t *config)
+{
+    if (!config) return ESP_ERR_INVALID_ARG;
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (!g_dsp_connected || !device->valid) return ESP_ERR_INVALID_STATE;
+    dsp_model_commit_multi_config(config);
+    if (device->kind == MVS_DEVICE_A800X_FIXED)
+        return nvs_settings_save_a800x_config(&config->music);
+    if (device->kind == MVS_DEVICE_GENERIC_ACP &&
+        device->fingerprint_valid)
+        return nvs_settings_save_generic_config(
+            &device->schema_fingerprint, config);
     return ESP_ERR_NOT_SUPPORTED;
 }
 
@@ -234,6 +293,43 @@ static esp_err_t handler_status_get(httpd_req_t *req)
     cJSON_AddNumberToObject(caps, "drc_ratio_step",
         device_profile->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ? 1.0 : 0.01);
     cJSON_AddBoolToObject(caps, "factory_defaults", a800x);
+
+    cJSON *paths = cJSON_AddObjectToObject(root, "paths");
+    cJSON_AddNumberToObject(paths, "count",
+                            dsp_ok ? device_profile->path_count : 0);
+    cJSON *available_paths = cJSON_AddArrayToObject(paths, "available");
+    for (int p = 0; p < MVS_PATH_COUNT; ++p) {
+        const mvs_effect_path_t *path =
+            mvs_device_profile_get_path(device_profile, (mvs_path_id_t)p);
+        if (!dsp_ok || !path) continue;
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "key",
+            p == MVS_PATH_REC ? "rec" : "music");
+        cJSON_AddStringToObject(item, "label", path->label);
+        cJSON *pc = cJSON_AddObjectToObject(item, "capabilities");
+        cJSON_AddBoolToObject(pc, "noise_suppressor",
+                              path->noise_suppressor.available);
+        cJSON_AddBoolToObject(pc, "virtual_bass",
+                              path->virtual_bass.available);
+        cJSON_AddBoolToObject(pc, "virtual_bass_classic",
+                              path->virtual_bass_classic.available);
+        cJSON_AddBoolToObject(pc, "phase", path->phase.available);
+        cJSON_AddBoolToObject(pc, "delay", path->delay_hq.available);
+        cJSON_AddBoolToObject(pc, "preeq", path->preeq.available);
+        cJSON_AddStringToObject(pc, "preeq_schema",
+            path->preeq_schema == MVS_PEQ_SCHEMA_A800X ? "a800x" :
+            path->preeq_schema == MVS_PEQ_SCHEMA_CLASSIC_10BAND ?
+            "classic_10band" : "none");
+        cJSON_AddBoolToObject(pc, "out_eq", path->out_eq.available);
+        cJSON_AddBoolToObject(pc, "drc", path->drc.available);
+        cJSON_AddNumberToObject(pc, "drc_ratio_step",
+            path->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ? 1.0 : 0.01);
+        cJSON_AddBoolToObject(pc, "usb_out_gain",
+                              path->usb_out_gain.available);
+        cJSON_AddBoolToObject(pc, "silence_detector",
+                              a800x && path->silence_detector.available);
+        cJSON_AddItemToArray(available_paths, item);
+    }
 
     // MAC
     char mac[18];
@@ -405,6 +501,146 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
     return ret;
 }
 
+static void add_eq_state(cJSON *root, const char *name,
+                         const mvs_preeq_state_t *state, bool valid)
+{
+    cJSON *eq = cJSON_AddObjectToObject(root, name);
+    cJSON_AddBoolToObject(eq, "valid", valid);
+    if (!valid) return;
+    cJSON_AddBoolToObject(eq, "enabled", state->block_enabled != 0);
+    cJSON_AddNumberToObject(eq, "pregain_db", state->pre_gain_raw / 256.0);
+    cJSON *filters = cJSON_AddArrayToObject(eq, "filters");
+    for (int i = 0; i < 10; ++i) {
+        const mvs_preeq_filter_t *filter = &state->filters[i];
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddBoolToObject(item, "enabled", filter->enabled != 0);
+        cJSON_AddNumberToObject(item, "type", filter->type);
+        cJSON_AddNumberToObject(item, "frequency_hz", filter->frequency_hz);
+        cJSON_AddNumberToObject(item, "q", filter->q_raw / 1024.0);
+        cJSON_AddNumberToObject(item, "gain_db", filter->gain_raw / 256.0);
+        cJSON_AddItemToArray(filters, item);
+    }
+}
+
+static esp_err_t handler_dsp_state_get(httpd_req_t *req)
+{
+    if (!g_dsp_connected) return send_error(req, 503, "DSP unavailable");
+    mvs_path_id_t path_id = request_path(req);
+    if (path_id == MVS_PATH_NONE)
+        return send_error(req, 400, "Missing or invalid path");
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    const mvs_effect_path_t *path =
+        mvs_device_profile_get_path(device, path_id);
+    if (!path) return send_error(req, 404, "DSP path unavailable");
+
+    dsp_profile_t profile;
+    esp_err_t err = dsp_model_readback_path(path_id, &profile);
+    if (err != ESP_OK) return send_error(req, 500, "DSP path readback failed");
+    dsp_model_commit_path_profile(path_id, &profile);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "path",
+        path_id == MVS_PATH_REC ? "rec" : "music");
+    cJSON_AddNumberToObject(root, "readback_ms",
+                            esp_timer_get_time() / 1000);
+
+    cJSON *noise = cJSON_AddObjectToObject(root, "noise_suppressor");
+    cJSON_AddBoolToObject(noise, "valid", path->noise_suppressor.available);
+    if (path->noise_suppressor.available) {
+        cJSON_AddBoolToObject(noise, "enabled",
+                              profile.noise_suppressor_enabled);
+        cJSON_AddNumberToObject(noise, "threshold_db",
+                                profile.noise_suppressor_threshold_raw / 100.0);
+        cJSON_AddNumberToObject(noise, "ratio",
+                                profile.noise_suppressor_ratio);
+        cJSON_AddNumberToObject(noise, "attack_ms",
+                                profile.noise_suppressor_attack_ms);
+        cJSON_AddNumberToObject(noise, "release_ms",
+                                profile.noise_suppressor_release_ms);
+    }
+
+    cJSON *bass = cJSON_AddObjectToObject(root, "virtual_bass");
+    cJSON_AddBoolToObject(bass, "valid", path->virtual_bass.available);
+    if (path->virtual_bass.available) {
+        cJSON_AddBoolToObject(bass, "enabled", profile.virtual_bass_enabled);
+        cJSON_AddNumberToObject(bass, "cutoff_hz",
+                                profile.virtual_bass_cutoff_hz);
+        cJSON_AddNumberToObject(bass, "intensity_pct",
+                                profile.virtual_bass_intensity_pct);
+        cJSON_AddBoolToObject(bass, "bass_enhanced",
+                              profile.virtual_bass_enhanced);
+    }
+
+    cJSON *vbc = cJSON_AddObjectToObject(root, "virtual_bass_classic");
+    cJSON_AddBoolToObject(vbc, "valid",
+                          path->virtual_bass_classic.available);
+    if (path->virtual_bass_classic.available) {
+        cJSON_AddBoolToObject(vbc, "enabled",
+                              profile.virtual_bass_classic_enabled);
+        cJSON_AddNumberToObject(vbc, "cutoff_hz",
+                                profile.virtual_bass_classic_cutoff_hz);
+        cJSON_AddNumberToObject(vbc, "intensity_pct",
+                                profile.virtual_bass_classic_intensity_pct);
+    }
+
+    cJSON *phase = cJSON_AddObjectToObject(root, "phase");
+    cJSON_AddBoolToObject(phase, "valid", path->phase.available);
+    if (path->phase.available)
+        cJSON_AddBoolToObject(phase, "inverted", profile.phase_invert);
+
+    cJSON *delay = cJSON_AddObjectToObject(root, "delay");
+    cJSON_AddBoolToObject(delay, "valid", path->delay_hq.available);
+    if (path->delay_hq.available) {
+        cJSON_AddBoolToObject(delay, "enabled", profile.delay_enabled);
+        cJSON_AddNumberToObject(delay, "delay_ms", profile.delay_ms);
+        cJSON_AddBoolToObject(delay, "hq_enabled",
+                              profile.delay_hq_enabled);
+    }
+
+    add_eq_state(root, "preeq", &profile.preeq, path->preeq.available);
+    add_eq_state(root, "out_eq", &profile.out_eq,
+                 path->out_eq.available && profile.out_eq_valid);
+
+    dsp_drc_view_t drc_view;
+    bool drc_ok = path->drc.available &&
+                  dsp_model_read_drc_view_path(path_id, &drc_view) == ESP_OK;
+    cJSON *drc = cJSON_AddObjectToObject(root, "drc");
+    cJSON_AddBoolToObject(drc, "valid", drc_ok);
+    if (drc_ok) {
+        cJSON_AddBoolToObject(drc, "enabled", drc_view.enabled);
+        cJSON_AddBoolToObject(drc, "full_band_supported",
+                              drc_view.full_band_supported);
+        cJSON_AddNumberToObject(drc, "pregain_db", drc_view.pregain_db);
+        cJSON_AddNumberToObject(drc, "threshold_db", drc_view.threshold_db);
+        cJSON_AddNumberToObject(drc, "ratio", drc_view.ratio);
+        cJSON_AddNumberToObject(drc, "attack_ms", drc_view.attack_ms);
+        cJSON_AddNumberToObject(drc, "release_ms", drc_view.release_ms);
+    }
+
+    cJSON *gain = cJSON_AddObjectToObject(root, "usb_out_gain");
+    cJSON_AddBoolToObject(gain, "valid", path->usb_out_gain.available);
+    if (path->usb_out_gain.available) {
+        double db = profile.usb_out_gain == 0 ? -72.0 :
+            20.0 * log10(profile.usb_out_gain / 4096.0);
+        cJSON_AddNumberToObject(gain, "gain_db", db);
+        cJSON_AddNumberToObject(gain, "gain_raw", profile.usb_out_gain);
+    }
+
+    cJSON *silence = cJSON_AddObjectToObject(root, "silence");
+    bool silence_available = device->kind == MVS_DEVICE_A800X_FIXED &&
+                             path->silence_detector.available;
+    cJSON_AddBoolToObject(silence, "valid", silence_available);
+    if (silence_available)
+        cJSON_AddBoolToObject(silence, "enabled",
+                              profile.silence_detector_enabled);
+
+    char *json = cJSON_PrintUnformatted(root);
+    esp_err_t result = send_json_response(req, 200, json);
+    free(json);
+    cJSON_Delete(root);
+    return result;
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/dsp/noise – Noise Suppressor + Auto-Save
 // ---------------------------------------------------------------------------
@@ -415,6 +651,8 @@ static esp_err_t handler_dsp_noise_post(httpd_req_t *req)
         return send_error(req, 503, "DSP unavailable");
     }
 
+    if (request_path(req) != MVS_PATH_MUSIC)
+        return send_error(req, 400, "Noise Suppressor is Music-only");
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) return send_error(req, 400, "No data");
@@ -520,6 +758,12 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
         return send_error(req, 503, "DSP unavailable");
     }
 
+    mvs_path_id_t path_id = request_path(req);
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        dsp_model_get_device_profile(), path_id);
+    if (!path || !path->virtual_bass.available)
+        return send_error(req, 400, "Missing or invalid path");
+
     char buf[192];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) return send_error(req, 400, "No data");
@@ -556,7 +800,7 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
 
     // Build next_profile from current + request values
     dsp_profile_t next;
-    dsp_model_get_profile(&next);
+    get_path_profile(path_id, &next);
     if (full_state) {
         next.virtual_bass_cutoff_hz = requested_cutoff;
         next.virtual_bass_intensity_pct = requested_intensity;
@@ -565,7 +809,8 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
     next.virtual_bass_enabled = requested;
 
     // DSP write: set_state handles OFF internally (enable-only write)
-    esp_err_t err = dsp_model_set_virtual_bass_state(
+    esp_err_t err = dsp_model_set_virtual_bass_path(
+        path_id,
         requested,
         next.virtual_bass_cutoff_hz,
         next.virtual_bass_intensity_pct,
@@ -575,7 +820,7 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
 
     // Targeted verify: only this module
     bool vb_enabled; uint16_t vb_cutoff, vb_intensity; bool vb_enhanced;
-    err = dsp_model_read_virtual_bass(&vb_enabled, &vb_cutoff,
+    err = dsp_model_read_virtual_bass_path(path_id, &vb_enabled, &vb_cutoff,
                                        &vb_intensity, &vb_enhanced);
     if (err != ESP_OK)
         return send_error(req, 500, "Virtual Bass readback failed");
@@ -589,7 +834,7 @@ static esp_err_t handler_dsp_bass_post(httpd_req_t *req)
     }
 
     // Commit + persist (gemeinsamer Abschluss)
-    esp_err_t save_err = commit_and_persist_profile(&next);
+    esp_err_t save_err = commit_and_persist_path(path_id, &next);
 
     // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
@@ -612,7 +857,10 @@ static cJSON *receive_small_json(httpd_req_t *req)
 
 static esp_err_t handler_dsp_vb_classic_post(httpd_req_t *req)
 {
-    if (!g_dsp_connected || !dsp_model_get_device_profile()->virtual_bass_classic.available)
+    mvs_path_id_t path_id = request_path(req);
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        dsp_model_get_device_profile(), path_id);
+    if (!g_dsp_connected || !path || !path->virtual_bass_classic.available)
         return send_error(req, 503, "Virtual Bass Classic unavailable");
     cJSON *json = receive_small_json(req);
     if (!json) return send_error(req, 400, "Invalid JSON");
@@ -632,18 +880,18 @@ static esp_err_t handler_dsp_vb_classic_post(httpd_req_t *req)
 
     // Build next_profile from current + request values
     dsp_profile_t next;
-    dsp_model_get_profile(&next);
+    get_path_profile(path_id, &next);
     next.virtual_bass_classic_enabled = requested;
     next.virtual_bass_classic_cutoff_hz = requested_cutoff;
     next.virtual_bass_classic_intensity_pct = requested_intensity;
 
     // DSP write (unchanged: only enable when OFF, all three when ON)
-    esp_err_t err = dsp_model_set_virtual_bass_classic_state(
-        requested, requested_cutoff, requested_intensity);
+    esp_err_t err = dsp_model_set_virtual_bass_classic_path(
+        path_id, requested, requested_cutoff, requested_intensity);
     bool confirmed = false;
     uint16_t confirmed_cutoff = 0, confirmed_intensity = 0;
-    if (err == ESP_OK) err = dsp_model_read_virtual_bass_classic(
-        &confirmed, &confirmed_cutoff, &confirmed_intensity);
+    if (err == ESP_OK) err = dsp_model_read_virtual_bass_classic_path(
+        path_id, &confirmed, &confirmed_cutoff, &confirmed_intensity);
     if (err != ESP_OK || confirmed != requested)
         return send_error(req, 500, "VB Classic readback mismatch");
     if (requested && (confirmed_cutoff != requested_cutoff ||
@@ -651,7 +899,7 @@ static esp_err_t handler_dsp_vb_classic_post(httpd_req_t *req)
         return send_error(req, 500, "VB Classic readback mismatch");
 
     // Commit + persist (gemeinsamer Abschluss)
-    esp_err_t save_err = commit_and_persist_profile(&next);
+    esp_err_t save_err = commit_and_persist_path(path_id, &next);
 
     // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
@@ -664,6 +912,8 @@ static esp_err_t handler_dsp_vb_classic_post(httpd_req_t *req)
 
 static esp_err_t handler_dsp_phase_post(httpd_req_t *req)
 {
+    if (request_path(req) != MVS_PATH_MUSIC)
+        return send_error(req, 400, "Phase is Music-only");
     if (!g_dsp_connected || !dsp_model_get_device_profile()->phase.available)
         return send_error(req, 503, "Music Phase unavailable");
     cJSON *json = receive_small_json(req);
@@ -690,8 +940,11 @@ static esp_err_t handler_dsp_phase_post(httpd_req_t *req)
 
 static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
 {
-    if (!g_dsp_connected || !dsp_model_get_device_profile()->delay_hq.available)
-        return send_error(req, 503, "Music Delay unavailable");
+    mvs_path_id_t path_id = request_path(req);
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        dsp_model_get_device_profile(), path_id);
+    if (!g_dsp_connected || !path || !path->delay_hq.available)
+        return send_error(req, 503, "Delay unavailable");
     cJSON *json = receive_small_json(req);
     if (!json) return send_error(req, 400, "Invalid JSON");
     cJSON *enable = cJSON_GetObjectItem(json, "enable");
@@ -703,9 +956,11 @@ static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
     }
     bool requested = cJSON_IsTrue(enable), requested_hq = cJSON_IsTrue(hq);
     uint16_t requested_delay = (uint16_t)delay->valuedouble; cJSON_Delete(json);
-    esp_err_t err = dsp_model_set_delay(requested, requested_delay, requested_hq);
+    esp_err_t err = dsp_model_set_delay_path(
+        path_id, requested, requested_delay, requested_hq);
     bool confirmed = false, confirmed_hq = false; uint16_t confirmed_delay = 0;
-    if (err == ESP_OK) err = dsp_model_read_delay(&confirmed, &confirmed_delay, &confirmed_hq);
+    if (err == ESP_OK) err = dsp_model_read_delay_path(
+        path_id, &confirmed, &confirmed_delay, &confirmed_hq);
     if (err != ESP_OK || confirmed != requested)
         return send_error(req, 500, "Music Delay readback mismatch");
     // Only verify params when enabled; DSP may normalize/zero params when OFF
@@ -714,12 +969,12 @@ static esp_err_t handler_dsp_delay_post(httpd_req_t *req)
         return send_error(req, 500, "Music Delay readback mismatch");
 
     dsp_profile_t next;
-    dsp_model_get_profile(&next);
+    get_path_profile(path_id, &next);
     next.delay_enabled = confirmed;
     // Preserve user-requested params even when OFF (DSP readback may differ)
     next.delay_ms = requested_delay;
     next.delay_hq_enabled = requested_hq;
-    esp_err_t save_err = commit_and_persist_profile(&next);
+    esp_err_t save_err = commit_and_persist_path(path_id, &next);
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed);
@@ -777,6 +1032,10 @@ static esp_err_t handler_dsp_silence_post(httpd_req_t *req)
 {
     if (!g_dsp_connected)
         return send_error(req, 503, "DSP unavailable");
+    const mvs_device_profile_t *device = dsp_model_get_device_profile();
+    if (device->kind != MVS_DEVICE_A800X_FIXED ||
+        request_path(req) != MVS_PATH_MUSIC)
+        return send_error(req, 404, "Silence Detector unavailable");
 
     char buf[64];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
@@ -829,6 +1088,11 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
+    mvs_path_id_t path_id = request_path(req);
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        dsp_model_get_device_profile(), path_id);
+    if (!path || !path->preeq.available)
+        return send_error(req, 400, "Missing or invalid path");
     if (req->content_len <= 0 || req->content_len > 4096) {
         return send_error(req, 400, "Invalid PreEQ data length");
     }
@@ -848,7 +1112,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
 
     // Targeted read: only PreEQ from DSP (no global readback)
     mvs_preeq_state_t requested;
-    esp_err_t err = dsp_model_read_preeq(&requested);
+    esp_err_t err = dsp_model_read_preeq_path(path_id, &requested);
     if (err != ESP_OK) { cJSON_Delete(json); return send_error(req, 500, "PreEQ readback failed"); }
 
     cJSON *enable = cJSON_GetObjectItem(json, "enable");
@@ -862,8 +1126,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     requested.block_enabled = cJSON_IsTrue(enable) ? 1 : 0;
     double pregain_scaled = pregain->valuedouble * 256.0;
     requested.pre_gain_raw = (int16_t)(pregain_scaled + (pregain_scaled >= 0 ? 0.5 : -0.5));
-    const mvs_device_profile_t *device_profile = dsp_model_get_device_profile();
-    int max_filter_type = device_profile->preeq_schema ==
+    int max_filter_type = path->preeq_schema ==
         MVS_PEQ_SCHEMA_CLASSIC_10BAND ? MVS_FILTER_NH : MVS_FILTER_HO;
 
     cJSON *change;
@@ -887,7 +1150,7 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
     }
     cJSON_Delete(json);
 
-    err = dsp_model_update_preeq(&requested);
+    err = dsp_model_update_preeq_path(path_id, &requested);
     if (err != ESP_OK) return send_error(req, 500, "Failed to write PreEQ");
 
     // Normalize for verification (same normalization as dsp_model_update_preeq)
@@ -900,12 +1163,12 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
             f->gain_raw = 0;
         }
     }
-    mvs_prepare_preeq_for_schema(device_profile->preeq_schema, &requested);
+    mvs_prepare_preeq_for_schema(path->preeq_schema, &requested);
 
     // Targeted verify: only PreEQ, no global readback
     // Semantic field-by-field comparison (not raw memcmp — booleans may be 0x0001 vs 0xFFFF)
     mvs_preeq_state_t verify;
-    err = dsp_model_read_preeq(&verify);
+    err = dsp_model_read_preeq_path(path_id, &verify);
     if (err != ESP_OK) {
         return send_error(req, 500, "PreEQ readback failed");
     }
@@ -964,14 +1227,157 @@ static esp_err_t handler_dsp_preeq_post(httpd_req_t *req)
 
     // Commit PreEQ-Teil ins Profil + gemeinsamer Persist-Abschluss
     dsp_profile_t next;
-    dsp_model_get_profile(&next);
+    get_path_profile(path_id, &next);
     memcpy(&next.preeq, &requested, sizeof(requested));
-    esp_err_t save_err = commit_and_persist_profile(&next);
+    esp_err_t save_err = commit_and_persist_path(path_id, &next);
 
     // Response aus committetem Profil
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", next.preeq.block_enabled != 0);
     cJSON_AddNumberToObject(result, "pregain_db", next.preeq.pre_gain_raw / 256.0);
+    cJSON_AddBoolToObject(result, "confirmed", true);
+    return send_dsp_response(req, result, save_err);
+}
+
+static bool eq_states_equal(const mvs_preeq_state_t *a,
+                            const mvs_preeq_state_t *b)
+{
+    if (!!a->block_enabled != !!b->block_enabled ||
+        a->pre_gain_raw != b->pre_gain_raw ||
+        a->selected_filter != b->selected_filter)
+        return false;
+    for (int i = 0; i < 10; ++i) {
+        const mvs_preeq_filter_t *x = &a->filters[i];
+        const mvs_preeq_filter_t *y = &b->filters[i];
+        if (!!x->enabled != !!y->enabled || x->type != y->type ||
+            x->frequency_hz != y->frequency_hz ||
+            x->q_raw != y->q_raw || x->gain_raw != y->gain_raw)
+            return false;
+    }
+    return true;
+}
+
+static esp_err_t handler_dsp_outeq_post(httpd_req_t *req)
+{
+    if (!g_dsp_connected) return send_error(req, 503, "DSP unavailable");
+    mvs_path_id_t path_id = request_path(req);
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        dsp_model_get_device_profile(), path_id);
+    if (!path || !path->out_eq.available)
+        return send_error(req, 400, "Missing or invalid path");
+    if (req->content_len <= 0 || req->content_len > 4096)
+        return send_error(req, 400, "Invalid Out EQ data length");
+
+    char *buf = malloc(req->content_len + 1);
+    if (!buf) return send_error(req, 500, "Out of memory");
+    size_t received = 0;
+    while (received < req->content_len) {
+        int n = httpd_req_recv(req, buf + received,
+                               req->content_len - received);
+        if (n <= 0) {
+            free(buf);
+            return send_error(req, 400, "Incomplete Out EQ data");
+        }
+        received += n;
+    }
+    buf[received] = '\0';
+    cJSON *json = cJSON_Parse(buf);
+    free(buf);
+    if (!json) return send_error(req, 400, "Invalid JSON");
+
+    mvs_preeq_state_t requested;
+    esp_err_t err = dsp_model_read_outeq_path(path_id, &requested);
+    if (err != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error(req, 500, "Out EQ readback failed");
+    }
+    cJSON *enable = cJSON_GetObjectItem(json, "enable");
+    cJSON *pregain = cJSON_GetObjectItem(json, "pregain_db");
+    cJSON *changes = cJSON_GetObjectItem(json, "filters");
+    if (!cJSON_IsBool(enable) || !cJSON_IsNumber(pregain) ||
+        !cJSON_IsArray(changes) || pregain->valuedouble < -128.0 ||
+        pregain->valuedouble > 127.996) {
+        cJSON_Delete(json);
+        return send_error(req, 400, "Invalid Out EQ values");
+    }
+    requested.block_enabled = cJSON_IsTrue(enable) ? 1 : 0;
+    requested.pre_gain_raw = (int16_t)lround(pregain->valuedouble * 256.0);
+    cJSON *change;
+    cJSON_ArrayForEach(change, changes) {
+        cJSON *index = cJSON_GetObjectItem(change, "index");
+        if (!cJSON_IsNumber(index) || index->valueint < 0 ||
+            index->valueint > 9) {
+            cJSON_Delete(json);
+            return send_error(req, 400, "Invalid Out EQ filter index");
+        }
+        mvs_preeq_filter_t *filter = &requested.filters[index->valueint];
+        cJSON *value = cJSON_GetObjectItem(change, "enabled");
+        if (value) {
+            if (!cJSON_IsBool(value)) {
+                cJSON_Delete(json);
+                return send_error(req, 400, "Invalid filter enabled");
+            }
+            filter->enabled = cJSON_IsTrue(value) ? 1 : 0;
+        }
+        value = cJSON_GetObjectItem(change, "type");
+        if (value) {
+            if (!cJSON_IsNumber(value) || value->valueint < 0 ||
+                value->valueint > MVS_FILTER_NH) {
+                cJSON_Delete(json);
+                return send_error(req, 400, "Invalid filter type");
+            }
+            filter->type = value->valueint;
+        }
+        value = cJSON_GetObjectItem(change, "frequency_hz");
+        if (value) {
+            if (!cJSON_IsNumber(value) || value->valuedouble < 1 ||
+                value->valuedouble > UINT16_MAX) {
+                cJSON_Delete(json);
+                return send_error(req, 400, "Invalid filter frequency");
+            }
+            filter->frequency_hz = (uint16_t)value->valuedouble;
+        }
+        value = cJSON_GetObjectItem(change, "q");
+        if (value) {
+            if (!cJSON_IsNumber(value) || value->valuedouble <= 0 ||
+                value->valuedouble > 63.999) {
+                cJSON_Delete(json);
+                return send_error(req, 400, "Invalid filter Q");
+            }
+            filter->q_raw =
+                (uint16_t)lround(value->valuedouble * 1024.0);
+        }
+        value = cJSON_GetObjectItem(change, "gain_db");
+        if (value) {
+            if (!cJSON_IsNumber(value) || value->valuedouble < -128.0 ||
+                value->valuedouble > 127.996) {
+                cJSON_Delete(json);
+                return send_error(req, 400, "Invalid filter gain");
+            }
+            filter->gain_raw =
+                (int16_t)lround(value->valuedouble * 256.0);
+        }
+    }
+    cJSON_Delete(json);
+
+    err = dsp_model_update_outeq_path(path_id, &requested);
+    if (err != ESP_OK) return send_error(req, 500, "Out EQ write failed");
+    mvs_prepare_preeq_for_schema(path->out_eq_schema, &requested);
+    mvs_preeq_state_t confirmed;
+    err = dsp_model_read_outeq_path(path_id, &confirmed);
+    if (err != ESP_OK || !eq_states_equal(&requested, &confirmed))
+        return send_error(req, 500, "Out EQ readback mismatch");
+
+    dsp_profile_t next;
+    get_path_profile(path_id, &next);
+    next.out_eq = confirmed;
+    next.out_eq_valid = true;
+    esp_err_t save_err = commit_and_persist_path(path_id, &next);
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "enabled",
+                          confirmed.block_enabled != 0);
+    cJSON_AddNumberToObject(result, "pregain_db",
+                            confirmed.pre_gain_raw / 256.0);
     cJSON_AddBoolToObject(result, "confirmed", true);
     return send_dsp_response(req, result, save_err);
 }
@@ -985,6 +1391,11 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
     if (!g_dsp_connected) {
         return send_error(req, 503, "DSP unavailable");
     }
+    mvs_path_id_t path_id = request_path(req);
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        dsp_model_get_device_profile(), path_id);
+    if (!path || !path->drc.available)
+        return send_error(req, 400, "Missing or invalid path");
     char buf[256];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) return send_error(req, 400, "No data");
@@ -1010,8 +1421,7 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
         return send_error(req, 400, "Invalid Full-Band DRC values");
     }
 
-    const mvs_device_profile_t *device = dsp_model_get_device_profile();
-    if (device->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
+    if (path->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
         fabs(ratio->valuedouble - round(ratio->valuedouble)) > 0.000001) {
         cJSON_Delete(json);
         return send_error(req, 400, "Classic DRC ratio must be an integer");
@@ -1029,7 +1439,8 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
     cJSON_Delete(json);
 
     dsp_drc_view_t confirmed;
-    esp_err_t err = dsp_model_update_drc_view(&requested, &confirmed);
+    esp_err_t err = dsp_model_update_drc_view_path(
+        path_id, &requested, &confirmed);
     if (err == ESP_ERR_INVALID_STATE)
         return send_error(req, 409,
                           "DRC is not in supported Full-Band mode; no values were changed");
@@ -1037,9 +1448,9 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
 
     // Commit DRC-View ins Profil + gemeinsamer Persist-Abschluss
     dsp_profile_t next;
-    dsp_model_get_profile(&next);
+    get_path_profile(path_id, &next);
     dsp_model_profile_apply_drc_view(&next, &confirmed);
-    esp_err_t save_err = commit_and_persist_profile(&next);
+    esp_err_t save_err = commit_and_persist_path(path_id, &next);
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "enabled", confirmed.enabled);
@@ -1050,6 +1461,47 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
     cJSON_AddNumberToObject(result, "ratio", confirmed.ratio);
     cJSON_AddNumberToObject(result, "attack_ms", confirmed.attack_ms);
     cJSON_AddNumberToObject(result, "release_ms", confirmed.release_ms);
+    cJSON_AddBoolToObject(result, "confirmed", true);
+    return send_dsp_response(req, result, save_err);
+}
+
+static esp_err_t handler_dsp_usb_out_gain_post(httpd_req_t *req)
+{
+    if (!g_dsp_connected) return send_error(req, 503, "DSP unavailable");
+    mvs_path_id_t path_id = request_path(req);
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        dsp_model_get_device_profile(), path_id);
+    if (!path || !path->usb_out_gain.available)
+        return send_error(req, 400, "Missing or invalid path");
+    cJSON *json = receive_small_json(req);
+    if (!json) return send_error(req, 400, "Invalid JSON");
+    cJSON *gain = cJSON_GetObjectItem(json, "gain_db");
+    if (!cJSON_IsNumber(gain) || gain->valuedouble < -72.0 ||
+        gain->valuedouble > 24.0) {
+        cJSON_Delete(json);
+        return send_error(req, 400, "Invalid USB Out Gain");
+    }
+    double requested_db = gain->valuedouble;
+    cJSON_Delete(json);
+    uint16_t requested_raw = (uint16_t)lround(
+        4096.0 * pow(10.0, requested_db / 20.0));
+    esp_err_t err =
+        dsp_model_set_usb_out_gain(path_id, requested_raw);
+    uint16_t confirmed_raw = 0;
+    if (err == ESP_OK)
+        err = dsp_model_read_usb_out_gain(path_id, &confirmed_raw);
+    if (err != ESP_OK || confirmed_raw != requested_raw)
+        return send_error(req, 500, "USB Out Gain readback mismatch");
+
+    dsp_profile_t next;
+    get_path_profile(path_id, &next);
+    next.usb_out_gain = confirmed_raw;
+    esp_err_t save_err = commit_and_persist_path(path_id, &next);
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddNumberToObject(result, "gain_raw", confirmed_raw);
+    cJSON_AddNumberToObject(result, "gain_db",
+        confirmed_raw == 0 ? -72.0 :
+        20.0 * log10(confirmed_raw / 4096.0));
     cJSON_AddBoolToObject(result, "confirmed", true);
     return send_dsp_response(req, result, save_err);
 }
@@ -1079,12 +1531,12 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
         buf[received] = '\0';
     }
 
-    dsp_profile_t profile;
+    dsp_multi_config_t config = { .schema_version = 2 };
     bool from_body = false;
 
     if (buf && buf[0] == '{') {
         // JSON-Body: parse via config_io
-        esp_err_t err = config_io_parse_import(buf, &profile);
+        esp_err_t err = config_io_parse_import_multi(buf, &config);
         free(buf);
         if (err != ESP_OK) {
             return send_error(req, 400, "Invalid import JSON in request body");
@@ -1094,10 +1546,14 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
         // Kein Body oder kein JSON: NVS-Konfiguration verwenden
         free(buf);
         const mvs_device_profile_t *device = dsp_model_get_device_profile();
-        esp_err_t err = device->kind == MVS_DEVICE_A800X_FIXED
-            ? nvs_settings_load_a800x_config(&profile)
-            : nvs_settings_load_generic_config(&device->schema_fingerprint,
-                                                &profile);
+        esp_err_t err;
+        if (device->kind == MVS_DEVICE_A800X_FIXED) {
+            err = nvs_settings_load_a800x_config(&config.music);
+            config.rec_valid = false;
+        } else {
+            err = nvs_settings_load_generic_config(
+                &device->schema_fingerprint, &config);
+        }
         if (err != ESP_OK) {
             return send_error(req, err == ESP_ERR_NOT_FOUND ? 400 : 500,
                               "No saved DSP configuration to apply");
@@ -1105,19 +1561,19 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
     }
 
     // Auf DSP anwenden
-    esp_err_t err = dsp_model_apply_profile(&profile);
+    esp_err_t err = dsp_model_apply_multi_config(&config);
     if (err != ESP_OK) {
         return send_error(req, 500, "Failed to apply DSP configuration");
     }
 
     // Targeted verify: alle Module, OFF-Module nur Enable
-    err = dsp_model_verify_full_profile(&profile);
+    err = dsp_model_verify_multi_config(&config);
     if (err != ESP_OK) {
         return send_error(req, 500, "DSP verification failed after apply");
     }
 
     // Commit exakt das angeforderte Profil + gemeinsamer Persist-Abschluss
-    esp_err_t save_err = commit_and_persist_profile(&profile);
+    esp_err_t save_err = commit_and_persist_multi(&config);
 
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "applied", true);
@@ -1168,8 +1624,8 @@ static esp_err_t handler_config_import_post(httpd_req_t *req)
     }
     buf[received] = '\0';
 
-    dsp_profile_t profile;
-    esp_err_t err = config_io_parse_import(buf, &profile);
+    dsp_multi_config_t config;
+    esp_err_t err = config_io_parse_import_multi(buf, &config);
     free(buf);
     if (err != ESP_OK) {
         return send_error(req, 400, "Invalid DSP configuration JSON");
@@ -1180,31 +1636,33 @@ static esp_err_t handler_config_import_post(httpd_req_t *req)
     cJSON_AddBoolToObject(preview, "valid", true);
     cJSON_AddStringToObject(preview, "message",
         "Configuration validated. Click Apply to send to DSP.");
+    cJSON_AddBoolToObject(preview, "music", true);
+    cJSON_AddBoolToObject(preview, "rec", config.rec_valid);
 
     cJSON *dsp = cJSON_AddObjectToObject(preview, "dsp");
     cJSON *ns = cJSON_AddObjectToObject(dsp, "noise_suppressor");
-    cJSON_AddBoolToObject(ns, "enabled", profile.noise_suppressor_enabled);
-    cJSON_AddNumberToObject(ns, "threshold_db", profile.noise_suppressor_threshold_raw / 100.0);
-    cJSON_AddNumberToObject(ns, "ratio", profile.noise_suppressor_ratio);
-    cJSON_AddNumberToObject(ns, "attack_ms", profile.noise_suppressor_attack_ms);
-    cJSON_AddNumberToObject(ns, "release_ms", profile.noise_suppressor_release_ms);
+    cJSON_AddBoolToObject(ns, "enabled", config.music.noise_suppressor_enabled);
+    cJSON_AddNumberToObject(ns, "threshold_db", config.music.noise_suppressor_threshold_raw / 100.0);
+    cJSON_AddNumberToObject(ns, "ratio", config.music.noise_suppressor_ratio);
+    cJSON_AddNumberToObject(ns, "attack_ms", config.music.noise_suppressor_attack_ms);
+    cJSON_AddNumberToObject(ns, "release_ms", config.music.noise_suppressor_release_ms);
 
     cJSON *vb = cJSON_AddObjectToObject(dsp, "virtual_bass");
-    cJSON_AddBoolToObject(vb, "enabled", profile.virtual_bass_enabled);
-    cJSON_AddNumberToObject(vb, "cutoff_hz", profile.virtual_bass_cutoff_hz);
-    cJSON_AddNumberToObject(vb, "intensity_pct", profile.virtual_bass_intensity_pct);
-    cJSON_AddBoolToObject(vb, "bass_enhanced", profile.virtual_bass_enhanced);
+    cJSON_AddBoolToObject(vb, "enabled", config.music.virtual_bass_enabled);
+    cJSON_AddNumberToObject(vb, "cutoff_hz", config.music.virtual_bass_cutoff_hz);
+    cJSON_AddNumberToObject(vb, "intensity_pct", config.music.virtual_bass_intensity_pct);
+    cJSON_AddBoolToObject(vb, "bass_enhanced", config.music.virtual_bass_enhanced);
 
     cJSON *sd = cJSON_AddObjectToObject(dsp, "silence_detector");
-    cJSON_AddBoolToObject(sd, "enabled", profile.silence_detector_enabled);
+    cJSON_AddBoolToObject(sd, "enabled", config.music.silence_detector_enabled);
 
     cJSON *preeq = cJSON_AddObjectToObject(dsp, "preeq");
-    cJSON_AddBoolToObject(preeq, "enabled", profile.preeq.block_enabled != 0);
-    cJSON_AddNumberToObject(preeq, "pregain_db", profile.preeq.pre_gain_raw / 256.0);
+    cJSON_AddBoolToObject(preeq, "enabled", config.music.preeq.block_enabled != 0);
+    cJSON_AddNumberToObject(preeq, "pregain_db", config.music.preeq.pre_gain_raw / 256.0);
 
     cJSON *drc = cJSON_AddObjectToObject(dsp, "drc");
-    cJSON_AddBoolToObject(drc, "enabled", profile.drc.enabled != 0);
-    cJSON_AddNumberToObject(drc, "mode", profile.drc.mode);
+    cJSON_AddBoolToObject(drc, "enabled", config.music.drc.enabled != 0);
+    cJSON_AddNumberToObject(drc, "mode", config.music.drc.mode);
 
     return send_ok(req, preview);
 }
@@ -1592,6 +2050,7 @@ void api_handlers_register(http_server_handle_t server)
     httpd_uri_t uris[] = {
         {.uri = "/api/status",       .method = HTTP_GET,  .handler = handler_status_get,       .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp",          .method = HTTP_GET,  .handler = handler_dsp_get,          .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/dsp/state",    .method = HTTP_GET,  .handler = handler_dsp_state_get,    .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/noise",    .method = HTTP_POST, .handler = handler_dsp_noise_post,   .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/bass",     .method = HTTP_POST, .handler = handler_dsp_bass_post,    .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/vb-classic", .method = HTTP_POST, .handler = handler_dsp_vb_classic_post, .user_ctx = NULL, .is_websocket = false},
@@ -1599,7 +2058,9 @@ void api_handlers_register(http_server_handle_t server)
         {.uri = "/api/dsp/delay",    .method = HTTP_POST, .handler = handler_dsp_delay_post,   .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/silence",  .method = HTTP_POST, .handler = handler_dsp_silence_post, .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/preeq",    .method = HTTP_POST, .handler = handler_dsp_preeq_post,   .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/dsp/outeq",    .method = HTTP_POST, .handler = handler_dsp_outeq_post,   .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/drc",      .method = HTTP_POST, .handler = handler_dsp_drc_post,     .user_ctx = NULL, .is_websocket = false},
+        {.uri = "/api/dsp/usb-out-gain", .method = HTTP_POST, .handler = handler_dsp_usb_out_gain_post, .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/apply",    .method = HTTP_POST, .handler = handler_dsp_apply_post,   .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/config/export", .method = HTTP_POST, .handler = handler_config_export_post, .user_ctx = NULL, .is_websocket = false},
         {.uri = "/api/dsp/config/import", .method = HTTP_POST, .handler = handler_config_import_post, .user_ctx = NULL, .is_websocket = false},
