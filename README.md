@@ -10,15 +10,17 @@ The project was originally developed for the **AIYIMA A800X** and now also inclu
 
 Depending on the connected DSP and the functions discovered on it, the web interface provides:
 
-* Music Pre EQ
-* Music Noise Suppressor
-* Virtual Bass
-* Music DRC
+* independent Music and Rec paths on compatible Generic ACP devices
+* Pre EQ and Out EQ with confirmed-readback and local-preview response curves
+* Noise Suppressor
+* Virtual Bass and Virtual Bass Classic
+* Phase and Delay/HQ
+* mode-aware DRC with Full Band, Lower/Upper, crossover, and optional Q controls
+* USB Out Gain
 * Silence Detector, when available
-* graphical Pre EQ frequency-response preview
 * automatic device and effect discovery for supported Generic ACP devices
-* automatic restoration of saved DSP settings
-* DSP configuration export and import
+* automatic restoration of path-specific saved DSP settings
+* fingerprint-bound multi-path DSP configuration export and import
 * explicit reload of the current state from the DSP
 * Wi-Fi setup with network scanning
 * configurable device name
@@ -37,9 +39,16 @@ DSP settings are stored in the ESP32's non-volatile storage and are reapplied af
 
 The controller does **not** write configuration data to the DSP's internal flash.
 
-For Generic ACP devices, saved configurations are tied to the detected device profile and DSP schema. A stored configuration is restored only when the connected device matches the profile for which it was saved.
+For Generic ACP devices, Music and Rec settings are stored independently.
+Saved configurations are tied to the detected device profile and DSP schema.
+A stored configuration is restored only when the connected device matches the
+profile and schema for which it was saved.
 
-Configuration export and import contain DSP settings only. They do not include Wi-Fi passwords, network information, IP addresses, MAC addresses, or the ESP32 device name.
+Configuration export and import include all supported DSP paths in one
+versioned file. Import performs a complete apply, DSP readback verification,
+and ESP-NVS save. Configuration files contain DSP settings only; they do not
+include Wi-Fi passwords, network information, IP addresses, MAC addresses, or
+the ESP32 device name.
 
 ## Supported DSP devices
 
@@ -50,7 +59,10 @@ Configuration export and import contain DSP settings only. They do not include W
 * Music Pre EQ
 * Music Noise Suppressor
 * Virtual Bass
-* Music DRC
+* Virtual Bass Classic
+* Music Phase
+* Music Pre EQ
+* Music DRC through the shared schema-driven DRC implementation
 * Silence Detector
 * configuration persistence
 * automatic restore
@@ -61,14 +73,20 @@ The AIYIMA A800X is currently the primary verified target.
 ### Generic MVSilicon ACP devices
 
 * currently recognized USB ID: `0x8888:0x1719`
-* experimental automatic ACP effect discovery
+* automatic ACP effect discovery for the tested compatible schema
 * dynamic effect addresses instead of an A800X-specific fixed map
 * only recognized and structurally compatible functions are enabled
-* device-profile-bound configuration persistence
+* separate Music and Rec paths where published by the DSP
+* Music/Rec Pre EQ, Out EQ, mode-aware DRC, Phase, Delay, Virtual Bass, and
+  USB Out Gain when reported available
+* device-profile- and schema-bound multi-path configuration persistence
 * automatic restore on a matching device
-* configuration export and import
+* full configuration export, import, Apply/Verify, and save
 
-Generic ACP support has been tested with a BP1048-based board exposing the supported Music Pre EQ, Noise Suppressor, Virtual Bass and DRC schemas.
+Generic ACP support has been tested with a BP1048-based board exposing
+independent Music and Rec paths. The available cards are derived from the
+discovered effect catalog and validated wire schemas; unavailable modules
+remain hidden.
 
 Other BP10/BP1048 devices may use different firmware, effect layouts or parameter structures. Detection of a USB device alone therefore does not guarantee compatibility.
 
@@ -93,7 +111,11 @@ Development boards with more flash or PSRAM may also be used for development, bu
 
 ### Pre EQ response preview
 
-The Pre EQ editor displays the combined frequency response of the currently configured filters.
+The Pre EQ and Out EQ editors display the combined frequency response of the
+currently configured filters. Gray represents the latest confirmed DSP
+readback; green represents the local draft. After a successful Apply and
+Verify the curves overlap. Later local edits move only the preview until they
+are applied.
 
 ![BP10 Pre EQ frequency response](docs/images/bp10-preeq-response.png)
 
@@ -179,7 +201,13 @@ Run the host regression tests with:
 tests/host/run.sh
 ```
 
-The canonical configuration in the repository targets 4 MB flash and 2 MB Quad PSRAM. When switching between development-board and product configurations, use separate build directories or regenerate the configuration from the appropriate defaults.
+Two tested build presets are provided:
+
+* Product: 4 MB flash and 2 MB Quad PSRAM
+* Devboard: 16 MB flash and 8 MB Octal PSRAM
+
+Keep separate build directories when switching targets. Published release
+assets use the Product configuration.
 
 ## Network security
 

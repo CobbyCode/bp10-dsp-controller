@@ -44,15 +44,11 @@ Keep the AIYIMA A800X path protocol-compatible while adding a constrained
 
 ## Current step
 
-Ticket `unified-mode-aware-drc` ist wieder in Bearbeitung. Die bisherige
-Mode-Zuordnung wurde korrigiert und der Mode-Selector samt `0x02`-Write,
-Full-Readback und sofortigem GUI-Neuaufbau ergänzt. Hosttests, A800X-Baseline,
-Build, Flash und Live-Wechsel über die Mode-Familien sind grün; Music/Rec-
-Screenshots wurden geliefert. Ticket bleibt bis zu Pauls Review in Bearbeitung.
-Der PreEQ-/Out-EQ-Kurvenfix übernimmt nach Apply/Verify den vollständigen
-pfadbezogenen DSP-Readback als neue graue Baseline. Live auf `.122` für
-Music/Rec und beide EQs geprüft; Ausgangswerte wiederhergestellt. Kein Push
-oder Release.
+Ticket `unified-mode-aware-drc` ist abgeschlossen und von Paul für Release
+freigegeben. Der vollständige Music/Rec-, EQ-, Import/Export- und gemeinsame
+DRC-Stand wurde auf Generic `.122` und A800X `.123` bestätigt. Release 0.5.0
+enthält die freigegebene Implementierung sowie ausschließlich Release-Metadaten
+und Dokumentation.
 
 ## Baseline
 
@@ -62,4 +58,5 @@ oder Release.
 
 ## Release
 
-Version is `0.4.2`. Local commit and annotated tag are authorized. No push.
+Version is `0.5.0`. Release commit, annotated tag, public push and GitHub
+release are authorized.

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0 - 2026-07-24
+
+- Add profile-driven Music and Rec DSP paths for compatible Generic ACP
+  devices, with independent capabilities, state, editing, verification, and
+  ESP-NVS persistence.
+- Add Music and Rec Pre EQ, Out EQ, DRC, Phase, Delay, Virtual Bass, and
+  related controls when the discovered device schema reports them available.
+- Add Generic USB Out Gain with full readback and verification.
+- Replace the former single-layout DRC UI with one shared, mode-aware
+  implementation. Full Band, Lower/Upper, optional additional Full Band,
+  crossover, and Q controls are derived from the confirmed DSP mode.
+- Keep AIYIMA A800X compatibility through the same profile- and schema-driven
+  DRC architecture while retaining its validated 54-byte four-path wire codec.
+- Extend configuration export, import, full Apply/Verify, and restore to
+  independent Music and Rec paths and reject mismatched device/schema
+  fingerprints.
+- Keep confirmed DSP readback baselines separate from local Pre EQ, Out EQ,
+  and DRC drafts so periodic polling cannot discard unapplied edits.
+- Restore complete STA/system status reporting and single-path A800X module
+  visibility in the updated frontend.
+
 ## 0.4.3 - 2026-07-22
 
 - Add one versioned JSON configuration format for the AIYIMA A800X and
