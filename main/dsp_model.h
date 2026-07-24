@@ -227,6 +227,8 @@ esp_err_t dsp_model_set_drc_enable(bool enable);
 esp_err_t dsp_model_update_drc(const mvs_drc_packed_state_t *state);
 esp_err_t dsp_model_update_drc_view_path(mvs_path_id_t path,
     const dsp_drc_view_t *requested, dsp_drc_view_t *confirmed);
+esp_err_t dsp_model_set_drc_mode_path(mvs_path_id_t path, uint16_t mode,
+    dsp_drc_view_t *confirmed);
 esp_err_t dsp_model_read_drc_view_path(mvs_path_id_t path,
     dsp_drc_view_t *view);
 esp_err_t dsp_model_profile_drc_view(const dsp_profile_t *profile,
@@ -244,6 +246,7 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected);
 esp_err_t dsp_model_verify_multi_config(const dsp_multi_config_t *expected);
 esp_err_t dsp_model_verify_path_profile(mvs_path_id_t path_id,
     const dsp_profile_t *expected);
+const char *dsp_model_get_verify_mismatch(void);
 
 // ---------------------------------------------------------------------------
 // Globaler DSP-Status (definiert in main.c)

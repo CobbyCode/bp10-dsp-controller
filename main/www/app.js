@@ -44,11 +44,33 @@
   const usbOutGainEditor = $('usb-out-gain-module').querySelector('.module-editor');
   let preeqBaseline = null;
   let outeqBaseline = null;
+  let outeqPending = false;
+  let outeqSyncing = false;
   let activeCapabilities = {};
   let activePreeqSchema = 'none';
   let activeDeviceProfile = 'unknown';
   let activePath = 'music';
   let pathCount = 0;
+  let drcMode = null;
+  let drcVisibleBands = [];
+  const drcDraftStates = new Map();
+  let renderedDrcKey = null;
+
+  function currentDrcKey() {
+    return `${activeDeviceProfile}:${activePath}`;
+  }
+
+  function currentDrcDraftState() {
+    const key = currentDrcKey();
+    if (!drcDraftStates.has(key)) {
+      drcDraftStates.set(key, { baseline: null, draft: null, dirty: false });
+    }
+    return drcDraftStates.get(key);
+  }
+
+  function cloneDrcState(data) {
+    return data ? JSON.parse(JSON.stringify(data)) : null;
+  }
 
   const factoryValueButtonIds = [
     'btn-noise-read', 'btn-bass-read', 'btn-silence-read',
@@ -145,11 +167,15 @@
     toggleModule('silence-module',
       activePath === 'music' && pathCaps.silence_detector);
     activePreeqSchema = pathCaps.preeq_schema || 'none';
-    $('drc-ratio').step = String(pathCaps.drc_ratio_step || 0.01);
+    activeCapabilities.drc_schema = pathCaps.drc_schema || 'none';
+    const legacyDrcRatio = $('drc-ratio');
+    if (legacyDrcRatio) {
+      legacyDrcRatio.step = String(pathCaps.drc_ratio_step || 0.01);
+    }
   }
 
   function refreshPathCapabilities() {
-    if (!activeCapabilities._pathMap || pathCount <= 1) return;
+    if (!activeCapabilities._pathMap || pathCount < 1) return;
     const pathCaps = activeCapabilities._pathMap[activePath];
     if (pathCaps) applyPathCapabilities(pathCaps);
   }
@@ -211,6 +237,13 @@
             const key = String(p.key || p.label || '').toLowerCase();
             activeCapabilities._pathMap[key] = p.capabilities || {};
           });
+          if (pathCount === 1 && data.paths.available.length === 1) {
+            activePath = String(
+              data.paths.available[0].key ||
+              data.paths.available[0].label ||
+              'music'
+            ).toLowerCase();
+          }
           refreshPathCapabilities();
         } else {
           // Legacy fallback: globale Capabilities
@@ -225,7 +258,11 @@
           toggleModule('outeq-module', false);
           toggleModule('usb-out-gain-module', false);
         }
-        $('drc-ratio').step = String(activeCapabilities.drc_ratio_step || 0.01);
+        const legacyDrcRatio = $('drc-ratio');
+        if (legacyDrcRatio) {
+          legacyDrcRatio.step =
+            String(activeCapabilities.drc_ratio_step || 0.01);
+        }
         const normalizedPersistence = data.device &&
           (data.device.profile === 'a800x_fixed' ||
            (data.device.profile === 'generic_acp_classic' &&
@@ -254,12 +291,12 @@
       sysHostname.textContent = data.hostname || '-';
       sysMac.textContent = data.mac || '-';
       sysMdns.textContent = data.mdns_address || '-';
+      sysApRow.classList.remove('hidden');
+      sysApIp.textContent = data.ap_ip || '192.168.4.1';
 
-      // AP-Zeile nur anzeigen wenn AP aktiv
+      // AP state only controls the transition banner. The configured AP
+      // address remains visible in the system summary when SoftAP is off.
       if (data.ap_active) {
-        sysApRow.classList.remove('hidden');
-        sysApIp.textContent = data.ap_ip || '192.168.4.1';
-
         // Countdown-Banner
         if (data.ap_shutdown_remaining_s > 0) {
           connectionBanner.classList.remove('hidden');
@@ -279,7 +316,6 @@
             (data.sta_ip || '') + '</small>';
         }
       } else {
-        sysApRow.classList.add('hidden');
         connectionBanner.classList.add('hidden');
       }
 
@@ -496,7 +532,7 @@
         resetOutEqUnread();
       }
 
-      if (data.drc && data.drc.valid === true) setDrcForm(data.drc);
+      if (data.drc && data.drc.valid === true) adoptDrcReadback(data.drc);
       else resetDrcUnread();
       if (data.virtual_bass_classic && data.virtual_bass_classic.valid)
         setVbClassicForm(data.virtual_bass_classic);
@@ -583,27 +619,44 @@
 
   function setOutEqForm(data) {
     if (!Array.isArray(data.filters) || data.filters.length !== 10) return;
-    outeqBaseline = cloneOutEq(data);
-    const filterTypes = activePreeqSchema === 'classic_10band'
-      ? classicFilterTypes : a800xFilterTypes;
-    $('outeq-enable').checked = outeqBaseline.enabled;
-    $('outeq-enable').disabled = false;
-    $('outeq-pregain').value = outeqBaseline.pregain_db.toFixed(2);
-    $('outeq-pregain').disabled = false;
-    outeqFilters.innerHTML = outeqBaseline.filters.map((f, i) => `
-      <div class="filter-card" data-filter="${i}">
-        <div class="filter-title"><strong>F${i}</strong><label><input type="checkbox" data-field="enabled" ${f.enabled ? 'checked' : ''}> On</label></div>
-        <div class="filter-fields">
-          <label class="field"><span>Type</span><select data-field="type">${filterTypes.map((t, n) => `<option value="${n}" ${n === f.type ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-          <label class="field"><span>Frequency (Hz)</span><input type="number" data-field="frequency_hz" min="1" max="65535" step="1" value="${f.frequency_hz}"></label>
-          <label class="field"><span>Gain (dB)</span><input type="number" data-field="gain_db" step="0.01" value="${f.gain_db.toFixed(2)}"></label>
-          <label class="field"><span>Q</span><input type="number" data-field="q" min="0.001" step="0.001" value="${f.q.toFixed(3)}"></label>
-        </div>
-      </div>`).join('');
-    $('btn-outeq-apply').disabled = false;
-    outeqState.textContent = outeqBaseline.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED';
-    outeqState.className = 'module-state ' + (outeqBaseline.enabled ? 'is-on' : '');
-    outeqEditor.classList.remove('is-dirty');
+    outeqSyncing = true;
+    try {
+      outeqBaseline = cloneOutEq(data);
+      const filterTypes = activePreeqSchema === 'classic_10band'
+        ? classicFilterTypes : a800xFilterTypes;
+      $('outeq-enable').checked = outeqBaseline.enabled;
+      $('outeq-enable').disabled = false;
+      $('outeq-pregain').value = outeqBaseline.pregain_db.toFixed(2);
+      $('outeq-pregain').disabled = false;
+      outeqFilters.innerHTML = outeqBaseline.filters.map((f, i) => `
+        <div class="filter-card" data-filter="${i}">
+          <div class="filter-title"><strong>F${i}</strong><label><input type="checkbox" data-field="enabled" ${f.enabled ? 'checked' : ''}> On</label></div>
+          <div class="filter-fields">
+            <label class="field"><span>Type</span><select data-field="type">${filterTypes.map((t, n) => `<option value="${n}" ${n === f.type ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+            <label class="field"><span>Frequency (Hz)</span><input type="number" data-field="frequency_hz" min="1" max="65535" step="1" value="${f.frequency_hz}"></label>
+            <label class="field"><span>Gain (dB)</span><input type="number" data-field="gain_db" step="0.01" value="${f.gain_db.toFixed(2)}"></label>
+            <label class="field"><span>Q</span><input type="number" data-field="q" min="0.001" step="0.001" value="${f.q.toFixed(3)}"></label>
+          </div>
+        </div>`).join('');
+      $('btn-outeq-apply').disabled = false;
+      outeqState.textContent = outeqBaseline.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED';
+      outeqState.className = 'module-state ' + (outeqBaseline.enabled ? 'is-on' : '');
+      outeqPending = false;
+      outeqEditor.classList.remove('is-dirty');
+      drawOutEq();
+    } finally {
+      outeqSyncing = false;
+    }
+  }
+
+  function adoptConfirmedOutEqReadback(state) {
+    if (!state || !state.valid || !Array.isArray(state.filters) ||
+        state.filters.length !== 10) {
+      throw new Error('Complete Out EQ readback missing after verification');
+    }
+    setOutEqForm(state);
+    outeqMessage.textContent = 'Complete Out EQ readback confirmed';
+    outeqMessage.className = 'form-message is-success';
     drawOutEq();
   }
 
@@ -618,6 +671,9 @@
     outeqFilters.innerHTML = '<p class="module-hint">A complete Out EQ readback is required.</p>';
     outeqState.textContent = 'NOT READ';
     outeqState.className = 'module-state';
+    outeqMessage.textContent = '';
+    outeqMessage.className = 'form-message';
+    outeqPending = false;
     outeqEditor.classList.remove('is-dirty');
     drawOutEq();
   }
@@ -650,6 +706,8 @@
   }
 
   function markOutEqDirty() {
+    if (outeqSyncing) return;
+    outeqPending = true;
     outeqEditor.classList.add('is-dirty');
     outeqMessage.textContent = 'Local preview · not yet applied';
     outeqMessage.className = 'form-message';
@@ -687,8 +745,7 @@
       if(result.status!=='ok'||!result.data||!result.data.confirmed) throw new Error(result.error||'Readback mismatch');
       const fresh=await api('GET',withActivePath('/dsp/state'));
       if (reqId !== dspRequestId) return;
-      if (fresh.out_eq && fresh.out_eq.valid) setOutEqForm(fresh.out_eq);
-      outeqMessage.textContent='Complete Out EQ readback confirmed'; outeqMessage.className='form-message is-success';
+      adoptConfirmedOutEqReadback(fresh.out_eq);
     } catch(error) { outeqState.textContent='MISMATCH'; outeqState.className='module-state is-error'; outeqMessage.textContent=error.message; outeqMessage.className='form-message is-error'; }
     finally { button.disabled=false; }
   });
@@ -874,57 +931,169 @@
     noiseEditor.classList.remove('is-dirty');
   }
 
-  function setDrcForm(data) {
-    const fullBandSupported = data.full_band_supported === true;
+  function renderDrcForm(data, dirty) {
+    const bandLabels = { lower: 'Lower Band', upper: 'Upper Band', full: 'Full Band' };
+    drcMode = Number(data.mode);
+    drcVisibleBands = [];
+    if (data.lower_upper_visible === true) drcVisibleBands.push('lower', 'upper');
+    if (data.full_band_supported === true) drcVisibleBands.push('full');
     $('drc-enable').checked = data.enabled === true;
-    $('drc-pregain').value = Number(data.pregain_db).toFixed(2);
-    $('drc-threshold').value = Number(data.threshold_db).toFixed(2);
-    $('drc-ratio').value = Number(data.ratio).toFixed(
-      Number(activeCapabilities.drc_ratio_step) === 1 ? 0 : 2);
-    $('drc-attack').value = data.attack_ms;
-    $('drc-release').value = data.release_ms;
-    ['drc-enable','drc-pregain','drc-threshold','drc-ratio','drc-attack','drc-release']
-      .forEach(id => $(id).disabled = !fullBandSupported);
-    $('btn-drc-reset').disabled = !fullBandSupported || !hasA800xFactoryDefaults();
-    $('btn-drc-apply').disabled = !fullBandSupported;
-    drcState.textContent = fullBandSupported
+    $('drc-enable').disabled = drcVisibleBands.length === 0;
+    $('drc-mode').value = String(drcMode);
+    $('drc-mode').disabled = drcMode < 0 || drcMode > 6 ||
+      activeCapabilities.drc_schema === 'a800x_4path';
+    $('drc-mode-label').textContent = `Mode ${drcMode}`;
+    $('drc-crossover-fields').classList.toggle('hidden', data.crossover_visible !== true);
+    $('drc-crossover').disabled = data.crossover_visible !== true;
+    $('drc-crossover').value = data.crossover_hz;
+    ['lp', 'hp'].forEach(kind => {
+      $(`drc-q-${kind}-field`).classList.toggle('hidden', data.q_visible !== true);
+      $(`drc-q-${kind}`).disabled = data.q_visible !== true;
+      $(`drc-q-${kind}`).value = Number(data[`q_${kind}`]).toFixed(3);
+    });
+    $('drc-bands').innerHTML = drcVisibleBands.map(name => {
+      const band = data.bands[name];
+      return `<fieldset class="module-card drc-band" data-drc-band="${name}">
+        <legend>${bandLabels[name]}</legend>
+        <div class="parameter-grid dsp-param-grid">
+          ${name !== 'full' || data.lower_upper_visible !== true ? `<label class="field"><span>Pre-Gain (dB)</span><input type="number" data-key="pregain_db" step="0.01" value="${Number(band.pregain_db).toFixed(2)}"></label>` : ''}
+          <label class="field"><span>Threshold (dB)</span><input type="number" data-key="threshold_db" step="0.01" value="${Number(band.threshold_db).toFixed(2)}"></label>
+          <label class="field"><span>Ratio</span><input type="number" data-key="ratio" step="1" value="${Number(band.ratio).toFixed(0)}"></label>
+          <label class="field"><span>Attack (ms)</span><input type="number" data-key="attack_ms" step="1" value="${band.attack_ms}"></label>
+          <label class="field"><span>Release (ms)</span><input type="number" data-key="release_ms" step="1" value="${band.release_ms}"></label>
+        </div></fieldset>`;
+    }).join('');
+    $('drc-bands').querySelectorAll('input').forEach(input =>
+      input.addEventListener('input', markDrcDirty));
+    $('btn-drc-reset').disabled = !(data.full_band_supported && hasA800xFactoryDefaults());
+    $('btn-drc-apply').disabled = drcVisibleBands.length === 0;
+    renderedDrcKey = currentDrcKey();
+    drcEditor.classList.toggle('is-dirty', dirty === true);
+    if (!dirty) {
+      drcMessage.textContent = drcVisibleBands.length ? '' : 'Unknown mode; complete state was read without enabling writes.';
+      drcMessage.className = 'form-message' + (drcVisibleBands.length ? '' : ' is-error');
+    }
+  }
+
+  function updateDrcReadbackStatus(data) {
+    const mode = Number(data.mode);
+    const hasWritableBands = data.lower_upper_visible === true ||
+      data.full_band_supported === true;
+    drcState.textContent = hasWritableBands
       ? (data.enabled ? 'ON · CONFIRMED' : 'OFF · CONFIRMED')
-      : 'UNSUPPORTED MODE · READ ONLY';
-    drcState.className = 'module-state ' + (fullBandSupported && data.enabled ? 'is-on' : '');
-    drcMessage.textContent = fullBandSupported
-      ? ''
-      : 'Only Full-Band mode can be edited safely; multiband and crossover values remain unchanged.';
-    drcMessage.className = 'form-message' + (fullBandSupported ? '' : ' is-error');
-    drcEditor.classList.remove('is-dirty');
+      : `MODE ${mode} · READ ONLY`;
+    drcState.className = 'module-state ' + (data.enabled ? 'is-on' : '');
+  }
+
+  function adoptDrcReadback(data, applied) {
+    const state = currentDrcDraftState();
+    state.baseline = cloneDrcState(data);
+    updateDrcReadbackStatus(data);
+    if (applied === true) {
+      state.draft = cloneDrcState(data);
+      state.dirty = false;
+      renderDrcForm(state.draft, false);
+      return;
+    }
+    if (state.dirty) {
+      // Polls may refresh the confirmed status/baseline, but the local draft
+      // remains the form's source of truth until Apply + Verify succeeds.
+      if (renderedDrcKey !== currentDrcKey() && state.draft)
+        renderDrcForm(state.draft, true);
+      return;
+    }
+    state.draft = cloneDrcState(data);
+    renderDrcForm(state.draft, false);
   }
 
   function resetDrcUnread() {
-    ['drc-enable','drc-pregain','drc-threshold','drc-ratio','drc-attack','drc-release']
+    ['drc-enable','drc-mode','drc-crossover','drc-q-lp','drc-q-hp']
       .forEach(id => { $(id).disabled = true; if (id !== 'drc-enable') $(id).value = ''; });
     $('drc-enable').checked = false;
+    $('drc-bands').innerHTML = '';
+    $('drc-crossover-fields').classList.add('hidden');
+    $('drc-mode-label').textContent = 'Mode not read';
+    drcMode = null;
+    drcVisibleBands = [];
     $('btn-drc-reset').disabled = true;
     $('btn-drc-apply').disabled = true;
     drcState.textContent = 'NOT READ';
     drcState.className = 'module-state';
     drcEditor.classList.remove('is-dirty');
+    renderedDrcKey = null;
   }
 
-  ['drc-enable','drc-pregain','drc-threshold','drc-ratio','drc-attack','drc-release']
-    .forEach(id => $(id).addEventListener('input', () => {
-      drcEditor.classList.add('is-dirty');
-      drcMessage.textContent = 'Unapplied changes';
-      drcMessage.className = 'form-message';
-    }));
+  function captureDrcDraft() {
+    const state = currentDrcDraftState();
+    const draft = cloneDrcState(state.draft || state.baseline);
+    if (!draft) return null;
+    draft.enabled = $('drc-enable').checked;
+    draft.mode = drcMode;
+    draft.crossover_hz = Number($('drc-crossover').value);
+    draft.q_lp = Number($('drc-q-lp').value);
+    draft.q_hp = Number($('drc-q-hp').value);
+    drcVisibleBands.forEach(name => {
+      const root = $('drc-bands').querySelector(`[data-drc-band="${name}"]`);
+      if (!root || !draft.bands || !draft.bands[name]) return;
+      root.querySelectorAll('[data-key]').forEach(input => {
+        draft.bands[name][input.dataset.key] = Number(input.value);
+      });
+    });
+    return draft;
+  }
+
+  function markDrcDirty() {
+    const state = currentDrcDraftState();
+    state.draft = captureDrcDraft();
+    state.dirty = true;
+    drcEditor.classList.add('is-dirty');
+    drcMessage.textContent = 'Unapplied changes';
+    drcMessage.className = 'form-message';
+  }
+  ['drc-enable','drc-crossover','drc-q-lp','drc-q-hp']
+    .forEach(id => $(id).addEventListener('input', markDrcDirty));
+
+  $('drc-mode').addEventListener('change', async () => {
+    const mode = Number($('drc-mode').value);
+    $('drc-mode').disabled = true;
+    drcMessage.textContent = 'Writing mode selector 0x02 and reading back…';
+    drcMessage.className = 'form-message';
+    try {
+      const result = await api('POST', withActivePath('/dsp/drc'), {
+        mode,
+        mode_only: true
+      });
+      if (result.status !== 'ok' || !result.data || !result.data.confirmed) {
+        throw new Error(result.error || 'Mode readback mismatch');
+      }
+      adoptDrcReadback(result.data, true);
+      drcMessage.textContent = 'Mode change confirmed by full readback';
+      drcMessage.className = 'form-message is-success';
+    } catch (error) {
+      drcMessage.textContent = error.message;
+      drcMessage.className = 'form-message is-error';
+      try {
+        const reread = await api('GET', withActivePath('/dsp/state'));
+        if (reread.status === 'ok' && reread.data && reread.data.drc)
+          adoptDrcReadback(reread.data.drc, true);
+      } catch (_) {}
+    } finally {
+      $('drc-mode').disabled = drcMode == null || drcMode < 0 || drcMode > 6 ||
+        activeCapabilities.drc_schema === 'a800x_4path';
+    }
+  });
 
   $('btn-drc-reset').addEventListener('click', () => {
     if (!hasA800xFactoryDefaults()) return;
     $('drc-enable').checked = true;
-    $('drc-pregain').value = '2.00';
-    $('drc-threshold').value = '-5.00';
-    $('drc-ratio').value = '1.00';
-    $('drc-attack').value = 2;
-    $('drc-release').value = 800;
-    drcEditor.classList.add('is-dirty');
+    const full = $('drc-bands').querySelector('[data-drc-band="full"]');
+    if (!full) return;
+    full.querySelector('[data-key="pregain_db"]').value = '2.00';
+    full.querySelector('[data-key="threshold_db"]').value = '-5.00';
+    full.querySelector('[data-key="ratio"]').value = '1';
+    full.querySelector('[data-key="attack_ms"]').value = 2;
+    full.querySelector('[data-key="release_ms"]').value = 800;
+    markDrcDirty();
     drcMessage.textContent = 'Full-Band factory values loaded locally · Apply to write';
     drcMessage.className = 'form-message';
   });
@@ -934,18 +1103,26 @@
     button.disabled = true;
     drcMessage.textContent = 'Read-modify-write and verification…';
     try {
+      const bands = {};
+      drcVisibleBands.forEach(name => {
+        const root = $('drc-bands').querySelector(`[data-drc-band="${name}"]`);
+        bands[name] = {};
+        root.querySelectorAll('[data-key]').forEach(input => {
+          bands[name][input.dataset.key] = Number(input.value);
+        });
+      });
       const result = await api('POST', withActivePath('/dsp/drc'), {
         enable: $('drc-enable').checked,
-        pregain_db: Number($('drc-pregain').value),
-        threshold_db: Number($('drc-threshold').value),
-        ratio: Number($('drc-ratio').value),
-        attack_ms: Number($('drc-attack').value),
-        release_ms: Number($('drc-release').value)
+        mode: drcMode,
+        crossover_hz: Number($('drc-crossover').value),
+        q_lp: Number($('drc-q-lp').value),
+        q_hp: Number($('drc-q-hp').value),
+        bands
       });
       if (result.status !== 'ok' || !result.data || !result.data.confirmed) {
         throw new Error(result.error || 'Readback mismatch');
       }
-      setDrcForm(result.data);
+      adoptDrcReadback(result.data, true);
       drcMessage.textContent = 'Complete DRC readback confirmed';
       drcMessage.className = 'form-message is-success';
     } catch (error) {
@@ -953,7 +1130,7 @@
       drcState.className = 'module-state is-error';
       drcMessage.textContent = error.message;
       drcMessage.className = 'form-message is-error';
-    } finally { button.disabled = $('drc-enable').disabled; }
+    } finally { button.disabled = drcVisibleBands.length === 0; }
   });
 
   function setSilenceForm(enabled) {
@@ -1053,6 +1230,18 @@
     preeqState.className = 'module-state ' + (preeqBaseline.enabled ? 'is-on' : '');
     preeqEditor.classList.remove('is-dirty');
     drawPreeq();
+  }
+
+  function adoptConfirmedPreeqReadback(state) {
+    if (!state || !state.valid || !Array.isArray(state.filters) ||
+        state.filters.length !== 10) {
+      throw new Error('Complete PreEQ readback missing after verification');
+    }
+    setPreeqForm({
+      preeq_enabled: state.enabled,
+      preeq_pregain_db: state.pregain_db,
+      preeq_filters: state.filters
+    });
   }
 
   function resetPreeqUnread() {
@@ -1195,11 +1384,7 @@
       if(result.status!=='ok'||!result.data||!result.data.confirmed) throw new Error(result.error||'Readback mismatch');
       const fresh=await api('GET',withActivePath('/dsp/state'));
       if (reqId !== dspRequestId) return;
-      if (fresh.preeq_enabled !== undefined) setPreeqForm({
-        preeq_enabled: fresh.preeq_enabled,
-        preeq_pregain_db: fresh.preeq_pregain_db,
-        preeq_filters: fresh.preeq_filters
-      });
+      adoptConfirmedPreeqReadback(fresh.preeq);
       preeqMessage.textContent='Complete PreEQ readback confirmed'; preeqMessage.className='form-message is-success';
     } catch(error) { preeqState.textContent='MISMATCH'; preeqState.className='module-state is-error'; preeqMessage.textContent=error.message; preeqMessage.className='form-message is-error'; }
     finally { button.disabled=false; }

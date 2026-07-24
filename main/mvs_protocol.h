@@ -137,21 +137,37 @@ typedef struct __attribute__((packed)) {
 } mvs_drc_packed_state_t;
 
 // ---------------------------------------------------------------------------
-// Datenstrukturen — Classic DRC (38 Byte, 3-Band)
+// Gemeinsamer DRC-State (38 Byte Payload / 39 Byte inkl. Full-Read-Marker)
 // ---------------------------------------------------------------------------
 
 typedef struct __attribute__((packed)) {
     uint16_t enabled;
-    uint16_t fc;             // Crossover-Frequenz
-    uint16_t mode;           // 2 = Full-Band
-    uint16_t q[2];           // Q1, Q2
-    int16_t  thresholds[3];  // 3 Bänder, Centi-dB
-    uint16_t ratios[3];      // Direktwert (20 = 20:1)
-    uint16_t attacks[3];     // ms
-    uint16_t releases[3];    // ms
-    uint16_t pregain1;       // Q4.12
-    uint16_t pregain2;       // Q4.12
-} mvs_drc_classic_state_t;
+    uint16_t crossover_hz;
+    uint16_t mode;
+    uint16_t q_lp_raw;       // Q6.10
+    uint16_t q_hp_raw;       // Q6.10
+    int16_t  thresholds[3];  // Lower, Upper, Full; Centi-dB
+    uint16_t ratios[3];      // Lower, Upper, Full; direct ratio
+    uint16_t attacks[3];
+    uint16_t releases[3];
+    uint16_t pregain_lower;  // Q4.12
+    uint16_t pregain_upper;  // Q4.12
+} mvs_drc_state_t;
+
+typedef enum {
+    MVS_DRC_BAND_LOWER = 0,
+    MVS_DRC_BAND_UPPER = 1,
+    MVS_DRC_BAND_FULL  = 2,
+    MVS_DRC_BAND_COUNT = 3,
+} mvs_drc_band_t;
+
+typedef struct {
+    double pregain_db;
+    double threshold_db;
+    double ratio;
+    uint16_t attack_ms;
+    uint16_t release_ms;
+} dsp_drc_band_view_t;
 
 // ---------------------------------------------------------------------------
 // USB Out Gain State
@@ -164,19 +180,21 @@ typedef struct __attribute__((packed)) {
 } mvs_usb_out_gain_state_t;
 
 // ---------------------------------------------------------------------------
-// Normalisierte DRC-Ansicht (Full-Band, schemaunabhängig)
+// Normalisierte, modefähige gemeinsame DRC-Ansicht
 // ---------------------------------------------------------------------------
 
 typedef struct {
     bool valid;
     bool enabled;
+    uint16_t mode;
+    bool lower_upper_visible;
     bool full_band_supported;
-
-    double pregain_db;
-    double threshold_db;
-    double ratio;
-    uint16_t attack_ms;
-    uint16_t release_ms;
+    bool crossover_visible;
+    bool q_visible;
+    uint16_t crossover_hz;
+    double q_lp;
+    double q_hp;
+    dsp_drc_band_view_t bands[MVS_DRC_BAND_COUNT];
 } dsp_drc_view_t;
 
 // ---------------------------------------------------------------------------
@@ -257,10 +275,10 @@ static inline esp_err_t mvs_decode_drc(const uint8_t *data, uint16_t length,
     return mvs_decode_drc_a800x(data, length, state);
 }
 
-esp_err_t mvs_decode_drc_classic(const uint8_t *data, uint16_t length,
-                                  mvs_drc_classic_state_t *state);
-esp_err_t mvs_drc_classic_to_view(const mvs_drc_classic_state_t *state,
-                                   dsp_drc_view_t *view);
+esp_err_t mvs_decode_drc_state(const uint8_t *data, uint16_t length,
+                               mvs_drc_state_t *state);
+esp_err_t mvs_drc_state_to_view(const mvs_drc_state_t *state,
+                                dsp_drc_view_t *view);
 esp_err_t mvs_drc_a800x_to_view(const mvs_drc_packed_state_t *state,
                                  dsp_drc_view_t *view);
 

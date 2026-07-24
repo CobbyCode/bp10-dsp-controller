@@ -126,7 +126,7 @@ static void test_catalog(void)
         &music->virtual_bass_classic, MVS_MODULE_VIRTUAL_BASS_CLASSIC, true, 6));
     assert(rec->virtual_bass_classic.available);
     assert(music->virtual_bass_classic.effect_id == 0x88);
-    assert(p.valid && p.drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
+    assert(p.valid && p.drc_schema == MVS_DRC_SCHEMA_UNIFIED_2BAND &&
            p.preeq_schema == MVS_PEQ_SCHEMA_CLASSIC_10BAND &&
            !p.silence_detector.available);
     assert(p.has_virtual_bass_classic && p.has_phase && p.has_delay_hq);
@@ -180,13 +180,19 @@ static void test_preeq_and_a800x_regression(void)
     assert(dynamic_drc[0] == 0xA5 && dynamic_drc[1] == 0x5A &&
            dynamic_drc[2] == 0x9A && dynamic_drc[3] == 0x37 &&
            dynamic_drc[4] == 0xFF && dynamic_drc[59] == 0x16);
+    drc.mode = 0;
+    drc.pregains[3] = 1;
+    dsp_drc_view_t floor_view;
+    assert(mvs_drc_a800x_to_view(&drc, &floor_view) == ESP_OK);
+    assert(floor_view.bands[MVS_DRC_BAND_FULL].pregain_db == -72.0);
 
     mvs_device_profile_t fixed;
     mvs_device_profile_set_a800x(&fixed);
     assert(fixed.noise_suppressor.effect_id == 0x88 &&
            fixed.silence_detector.effect_id == 0x89 &&
            fixed.virtual_bass.effect_id == 0x97 && fixed.preeq.effect_id == 0x99 &&
-           fixed.drc.effect_id == 0x9A && fixed.drc_schema == MVS_DRC_SCHEMA_A800X_4PATH);
+           fixed.drc.effect_id == 0x9A && fixed.drc.state_size == 54 &&
+           fixed.drc_schema == MVS_DRC_SCHEMA_A800X_4PATH);
 }
 
 static void test_classic_drc(void)
@@ -199,14 +205,13 @@ static void test_classic_drc(void)
     put_u16(wire + 22 + 2 * 2, 10);
     put_u16(wire + 28 + 2 * 2, 1000);
     put_u16(wire + 34, 5157); put_u16(wire + 36, 4096);
-    mvs_drc_classic_state_t state;
-    assert(mvs_decode_drc_classic(wire, sizeof(wire), &state) == ESP_OK);
+    mvs_drc_state_t state;
+    assert(mvs_decode_drc_state(wire, sizeof(wire), &state) == ESP_OK);
     dsp_drc_view_t view;
-    assert(mvs_drc_classic_to_view(&state, &view) == ESP_OK);
-    assert(view.valid && view.full_band_supported && view.enabled);
-    assert(fabs(view.threshold_db + 20.0) < 0.001 && view.ratio == 20.0 &&
-           view.attack_ms == 10 && view.release_ms == 1000 &&
-           fabs(view.pregain_db - 2.0) < 0.01);
+    assert(mvs_drc_state_to_view(&state, &view) == ESP_OK);
+    assert(view.valid && view.lower_upper_visible &&
+           !view.full_band_supported && view.crossover_visible &&
+           !view.q_visible && view.enabled);
 
     uint8_t frame[16]; size_t frame_len = 0;
     const uint16_t ratios[] = {100,100,20};
@@ -222,6 +227,23 @@ static void test_classic_drc(void)
     assert(mvs_build_write_u16_array_frame(0x8F, 4, thresholds, 3, frame,
                                             sizeof(frame), &frame_len) == ESP_OK);
     assert(memcmp(frame, expected_threshold, sizeof(expected_threshold)) == 0);
+
+    for (uint16_t mode = 0; mode <= 6; ++mode) {
+        put_u16(wire + 4, mode);
+        assert(mvs_decode_drc_state(wire, sizeof(wire), &state) == ESP_OK);
+        assert(mvs_drc_state_to_view(&state, &view) == ESP_OK);
+        assert(view.valid);
+        assert(view.lower_upper_visible == (mode >= 1));
+        assert(view.full_band_supported == (mode == 0 || mode >= 4));
+        assert(view.crossover_visible == (mode >= 1));
+        assert(view.q_visible == (mode == 3 || mode == 6));
+    }
+
+    put_u16(wire + 4, 99);
+    assert(mvs_decode_drc_state(wire, sizeof(wire), &state) == ESP_OK);
+    assert(mvs_drc_state_to_view(&state, &view) == ESP_OK);
+    assert(view.valid && !view.lower_upper_visible &&
+           !view.full_band_supported);
 }
 
 static void test_schema_fingerprint_ignores_addresses(void)

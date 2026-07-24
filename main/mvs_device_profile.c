@@ -201,11 +201,7 @@ static bool validate_module_size(mvs_module_kind_t module, uint16_t state_size,
             return state_size == 106;
         case MVS_MODULE_DRC:
             if (state_size == 38) {
-                if (drc_schema) *drc_schema = MVS_DRC_SCHEMA_CLASSIC_3BAND;
-                return true;
-            }
-            if (state_size == 54) {
-                if (drc_schema) *drc_schema = MVS_DRC_SCHEMA_A800X_4PATH;
+                if (drc_schema) *drc_schema = MVS_DRC_SCHEMA_UNIFIED_2BAND;
                 return true;
             }
             return false;

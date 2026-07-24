@@ -8,6 +8,7 @@
 #include "dsp_model.h"
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -27,11 +28,45 @@ static dsp_profile_t s_rec_profile = {0};
 
 // Legacy: aktuelles DSP-Profil (alias auf s_music_profile)
 static dsp_profile_t s_current_profile = {0};
+static char s_verify_mismatch[192] = {0};
+
+static esp_err_t verify_mismatch_i64(mvs_path_id_t path_id,
+    const char *module, uint8_t effect_id, const char *field,
+    long long expected, long long actual)
+{
+    snprintf(s_verify_mismatch, sizeof(s_verify_mismatch),
+             "%s | %s | %lld | %lld | mismatch",
+             module, field, expected, actual);
+    ESP_LOGE(TAG, "Verify mismatch path=%s effect=0x%02X: %s",
+             path_id == MVS_PATH_REC ? "rec" : "music",
+             effect_id, s_verify_mismatch);
+    return ESP_ERR_INVALID_RESPONSE;
+}
+
+static esp_err_t verify_error(mvs_path_id_t path_id, const char *module,
+                              uint8_t effect_id, const char *field,
+                              const char *expected, const char *actual,
+                              esp_err_t error)
+{
+    snprintf(s_verify_mismatch, sizeof(s_verify_mismatch),
+             "%s | %s | %s | %s | %s",
+             module, field, expected, actual, esp_err_to_name(error));
+    ESP_LOGE(TAG, "Verify error path=%s effect=0x%02X: %s",
+             path_id == MVS_PATH_REC ? "rec" : "music",
+             effect_id, s_verify_mismatch);
+    return error;
+}
+
+const char *dsp_model_get_verify_mismatch(void)
+{
+    return s_verify_mismatch;
+}
 
 // ---------------------------------------------------------------------------
 // Forward declarations für Funktionen, die vor ihrer Definition verwendet werden
-static esp_err_t read_drc_classic_id(uint8_t effect_id,
-                                     mvs_drc_classic_state_t *state);
+static esp_err_t read_drc_state_id(uint8_t effect_id, mvs_drc_state_t *state);
+static esp_err_t read_drc_a800x_state_id(
+    uint8_t effect_id, mvs_drc_packed_state_t *state);
 static inline uint16_t read_u16_le(const uint8_t *buf);
 static void load_drc_view(const dsp_profile_t *profile, dsp_drc_view_t *view);
 static void store_drc_view(dsp_profile_t *profile, const dsp_drc_view_t *view);
@@ -254,6 +289,7 @@ esp_err_t dsp_model_apply_profile(const dsp_profile_t *profile)
 esp_err_t dsp_model_apply_multi_config(const dsp_multi_config_t *config)
 {
     if (!config) return ESP_ERR_INVALID_ARG;
+    s_verify_mismatch[0] = '\0';
     esp_err_t err = dsp_model_apply_path_profile(MVS_PATH_MUSIC, &config->music);
     if (err != ESP_OK) return err;
     if (config->rec_valid && s_device_profile.paths[MVS_PATH_REC].present) {
@@ -337,14 +373,13 @@ esp_err_t dsp_model_apply_path_profile(mvs_path_id_t path_id,
 
     // DRC (path-aware)
     if (path->drc.available) {
-        if (path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
-            err = dsp_model_update_drc(&profile->drc);
-        } else {
-            dsp_drc_view_t requested, confirmed;
-            load_drc_view(profile, &requested);
-            err = dsp_model_update_drc_view_path(path_id, &requested, &confirmed);
+        dsp_drc_view_t requested, confirmed;
+        load_drc_view(profile, &requested);
+        err = dsp_model_update_drc_view_path(path_id, &requested, &confirmed);
+        if (err != ESP_OK && first_err == ESP_OK) {
+            first_err = verify_error(path_id, "drc", path->drc.effect_id,
+                "apply_readback", "confirmed", "not_confirmed", err);
         }
-        if (err != ESP_OK && first_err == ESP_OK) first_err = err;
     }
 
     // USB Out Gain (path-aware)
@@ -478,15 +513,10 @@ esp_err_t dsp_model_readback_path(mvs_path_id_t path_id, dsp_profile_t *profile)
     // DRC
     profile->drc_readback_valid = false;
     if (path->drc.available) {
-        if (path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
-            profile->drc_readback_valid =
-                dsp_model_read_drc(&profile->drc) == ESP_OK;
-        } else {
-            dsp_drc_view_t view;
-            if (dsp_model_read_drc_view_path(path_id, &view) == ESP_OK) {
-                store_drc_view(profile, &view);
-                profile->drc_readback_valid = true;
-            }
+        dsp_drc_view_t view;
+        if (dsp_model_read_drc_view_path(path_id, &view) == ESP_OK) {
+            store_drc_view(profile, &view);
+            profile->drc_readback_valid = true;
         }
     }
 
@@ -574,34 +604,59 @@ esp_err_t dsp_model_read_outeq_path(mvs_path_id_t path_id,
 esp_err_t dsp_model_read_drc(mvs_drc_packed_state_t *state)
 {
     if (!state) return ESP_ERR_INVALID_ARG;
-    if (!s_device_profile.drc.available ||
-        s_device_profile.drc_schema != MVS_DRC_SCHEMA_A800X_4PATH)
-        return ESP_ERR_NOT_SUPPORTED;
-
-    uint8_t drc_id = s_device_profile.drc.effect_id;
-    uint8_t frame[5], report[256];
-    uint16_t report_len = 0;
-    mvs_build_query_frame(drc_id, frame, sizeof(frame));
-    mvs_prepare_hid_report(frame, sizeof(frame), report);
-    esp_err_t err = usb_host_ctrl_send_report(report, sizeof(report));
-    if (err != ESP_OK) return err;
-    vTaskDelay(pdMS_TO_TICKS(50));
-    err = usb_host_ctrl_get_report(report, &report_len);
-    if (err != ESP_OK) return err;
-    if (report_len < 60 || report[0] != MVS_FRAME_MAGIC_1 ||
-        report[1] != MVS_FRAME_MAGIC_2 || report[2] != drc_id ||
-        report[4] != 0xFF || report[59] != MVS_FRAME_TERMINATOR)
-        return ESP_ERR_INVALID_RESPONSE;
-    return mvs_decode_drc_a800x(report + 5, report_len - 6, state);
+    if (s_device_profile.drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
+        return read_drc_a800x_state_id(
+            s_device_profile.drc.effect_id, state);
+    }
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
-static esp_err_t read_drc_classic(mvs_drc_classic_state_t *state)
+static esp_err_t read_drc_a800x_state_id(
+    uint8_t effect_id, mvs_drc_packed_state_t *state)
 {
-    return read_drc_classic_id(s_device_profile.drc.effect_id, state);
+    if (!state) return ESP_ERR_INVALID_ARG;
+    uint8_t frame[5], report[256];
+    mvs_build_query_frame(effect_id, frame, sizeof(frame));
+    esp_err_t last_err = ESP_ERR_INVALID_RESPONSE;
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        uint16_t report_len = 0;
+        mvs_prepare_hid_report(frame, sizeof(frame), report);
+        esp_err_t err = usb_host_ctrl_send_report(report, sizeof(report));
+        if (err != ESP_OK) {
+            last_err = err;
+            continue;
+        }
+        vTaskDelay(pdMS_TO_TICKS(70));
+        err = usb_host_ctrl_get_report(report, &report_len);
+        if (err != ESP_OK) {
+            last_err = err;
+            continue;
+        }
+        log_full_read("A800X DRC", effect_id, 55, report, report_len);
+        uint8_t wire_len = report_len >= 4 ? report[3] : 0;
+        if (report_len >= 60 &&
+            report[0] == MVS_FRAME_MAGIC_1 &&
+            report[1] == MVS_FRAME_MAGIC_2 &&
+            report[2] == effect_id &&
+            wire_len == 55 &&
+            report[4] == 0xFF &&
+            report[59] == MVS_FRAME_TERMINATOR) {
+            esp_err_t decode = mvs_decode_drc_a800x(
+                report + 5, 54, state);
+            if (decode == ESP_OK) {
+                ESP_LOGI(TAG,
+                         "A800X DRC decoded: effect=0x%02X schema=a800x_4path "
+                         "payload=54 mode=%u",
+                         effect_id, state->mode);
+            }
+            return decode;
+        }
+        last_err = ESP_ERR_INVALID_RESPONSE;
+    }
+    return last_err;
 }
 
-static esp_err_t read_drc_classic_id(uint8_t effect_id,
-                                      mvs_drc_classic_state_t *state)
+static esp_err_t read_drc_state_id(uint8_t effect_id, mvs_drc_state_t *state)
 {
     if (!state) return ESP_ERR_NOT_SUPPORTED;
     uint8_t frame[5], report[256];
@@ -630,7 +685,7 @@ static esp_err_t read_drc_classic_id(uint8_t effect_id,
             wire_len == 39 && (size_t)wire_len + 5U <= report_len &&
             report[4] == 0xFF &&
             report[4U + wire_len] == MVS_FRAME_TERMINATOR) {
-            return mvs_decode_drc_classic(report + 5, 38, state);
+            return mvs_decode_drc_state(report + 5, 38, state);
         }
         ESP_LOGW(TAG, "DRC 0x%02X invalid read %u: len=%u wire=%u hdr=%02X %02X %02X %02X %02X",
                  effect_id, attempt + 1U, report_len, wire_len, report[0],
@@ -657,17 +712,17 @@ esp_err_t dsp_model_read_drc_view_path(mvs_path_id_t path_id,
 
     if (path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
         mvs_drc_packed_state_t state;
-        esp_err_t err = dsp_model_read_drc(&state);
+        esp_err_t err = read_drc_a800x_state_id(
+            path->drc.effect_id, &state);
         if (err != ESP_OK) return err;
         return mvs_drc_a800x_to_view(&state, view);
     }
-    if (path->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND) {
-        mvs_drc_classic_state_t state;
-        esp_err_t err = read_drc_classic_id(path->drc.effect_id, &state);
-        if (err != ESP_OK) return err;
-        return mvs_drc_classic_to_view(&state, view);
-    }
-    return ESP_ERR_NOT_SUPPORTED;
+    if (path->drc_schema != MVS_DRC_SCHEMA_UNIFIED_2BAND)
+        return ESP_ERR_NOT_SUPPORTED;
+    mvs_drc_state_t state;
+    esp_err_t err = read_drc_state_id(path->drc.effect_id, &state);
+    if (err != ESP_OK) return err;
+    return mvs_drc_state_to_view(&state, view);
 }
 
 esp_err_t dsp_model_profile_drc_view(const dsp_profile_t *profile,
@@ -698,6 +753,36 @@ esp_err_t dsp_model_update_drc_view(const dsp_drc_view_t *requested,
     return dsp_model_update_drc_view_path(MVS_PATH_MUSIC, requested, confirmed);
 }
 
+esp_err_t dsp_model_set_drc_mode_path(mvs_path_id_t path_id, uint16_t mode,
+                                       dsp_drc_view_t *confirmed)
+{
+    if (!confirmed || mode > 6) return ESP_ERR_INVALID_ARG;
+    const mvs_effect_path_t *path = mvs_device_profile_get_path(
+        &s_device_profile, path_id);
+    if (!path || !path->drc.available ||
+        path->drc_schema != MVS_DRC_SCHEMA_UNIFIED_2BAND)
+        return ESP_ERR_NOT_SUPPORTED;
+
+    mvs_drc_state_t before;
+    esp_err_t err = read_drc_state_id(path->drc.effect_id, &before);
+    if (err != ESP_OK) return err;
+    if (before.mode != mode) {
+        uint8_t frame[8];
+        err = mvs_build_write_frame(path->drc.effect_id, 0x02, mode,
+                                    frame, sizeof(frame));
+        if (err != ESP_OK) return err;
+        err = send_mvs_command(frame, sizeof(frame));
+        if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    mvs_drc_state_t after;
+    err = read_drc_state_id(path->drc.effect_id, &after);
+    if (err != ESP_OK) return err;
+    if (after.mode != mode) return ESP_ERR_INVALID_RESPONSE;
+    return mvs_drc_state_to_view(&after, confirmed);
+}
+
 esp_err_t dsp_model_update_drc_view_path(mvs_path_id_t path_id,
                                           const dsp_drc_view_t *requested,
                                           dsp_drc_view_t *confirmed)
@@ -709,72 +794,131 @@ esp_err_t dsp_model_update_drc_view_path(mvs_path_id_t path_id,
     uint8_t effect_id = path->drc.effect_id;
 
     if (path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
-        mvs_drc_packed_state_t state;
-        esp_err_t err = dsp_model_read_drc(&state);
+        mvs_drc_packed_state_t before;
+        esp_err_t err = read_drc_a800x_state_id(effect_id, &before);
         if (err != ESP_OK) return err;
-        if (state.mode != 0) return ESP_ERR_INVALID_STATE;
-        state.enabled = requested->enabled ? 1U : 0U;
-        state.pregains[3] = (uint16_t)lround(4096.0 * pow(10.0, requested->pregain_db / 20.0));
-        state.thresholds[3] = (int16_t)lround(requested->threshold_db * 100.0);
-        state.ratios[3] = (uint16_t)lround(requested->ratio * 100.0);
-        state.attacks[3] = requested->attack_ms;
-        state.releases[3] = requested->release_ms;
-        err = dsp_model_update_drc(&state);
-        if (err != ESP_OK) return err;
-        return dsp_model_read_drc_view(confirmed);
-    }
+        if (before.mode != requested->mode || before.mode != 0)
+            return ESP_ERR_INVALID_STATE;
 
-    if (path->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND) {
-        mvs_drc_classic_state_t before;
-        esp_err_t err = read_drc_classic_id(effect_id, &before);
-        if (err != ESP_OK) return err;
-        if (before.mode != 2) return ESP_ERR_INVALID_STATE;
-        mvs_drc_classic_state_t desired = before;
+        mvs_drc_packed_state_t desired = before;
+        const dsp_drc_band_view_t *full =
+            &requested->bands[MVS_DRC_BAND_FULL];
         desired.enabled = requested->enabled ? 1U : 0U;
-        desired.thresholds[2] = (int16_t)lround(requested->threshold_db * 100.0);
-        desired.ratios[2] = (uint16_t)lround(requested->ratio);
-        desired.attacks[2] = requested->attack_ms;
-        desired.releases[2] = requested->release_ms;
-        desired.pregain1 = (uint16_t)lround(4096.0 * pow(10.0, requested->pregain_db / 20.0));
+        desired.pregains[3] = full->pregain_db <= -72.0
+            ? 0U
+            : (uint16_t)lround(
+                4096.0 * pow(10.0, full->pregain_db / 20.0));
+        desired.thresholds[3] =
+            (int16_t)lround(full->threshold_db * 100.0);
+        desired.ratios[3] = (uint16_t)lround(full->ratio * 100.0);
+        desired.attacks[3] = full->attack_ms;
+        desired.releases[3] = full->release_ms;
 
-        uint16_t threshold_values[3], ratio_values[3], attack_values[3], release_values[3];
-        for (size_t i = 0; i < 3; i++) {
-            threshold_values[i] = (uint16_t)desired.thresholds[i];
-            ratio_values[i] = desired.ratios[i];
-            attack_values[i] = desired.attacks[i];
-            release_values[i] = desired.releases[i];
-        }
-        err = send_u16_array(effect_id, 4, threshold_values, 3);
-        if (err == ESP_OK) err = send_u16_array(effect_id, 5, ratio_values, 3);
-        if (err == ESP_OK) err = send_u16_array(effect_id, 6, attack_values, 3);
-        if (err == ESP_OK) err = send_u16_array(effect_id, 7, release_values, 3);
-        if (err == ESP_OK) {
-            uint8_t frame[8];
-            err = mvs_build_write_frame(effect_id, 8, desired.pregain1, frame, sizeof(frame));
-            if (err == ESP_OK) err = send_mvs_command(frame, sizeof(frame));
-        }
-        if (err == ESP_OK) {
-            uint8_t frame[8];
-            err = mvs_build_write_frame(effect_id, 0, desired.enabled, frame, sizeof(frame));
-            if (err == ESP_OK) err = send_mvs_command(frame, sizeof(frame));
-        }
+        uint8_t full_frame[60];
+        err = mvs_build_drc_a800x_full_frame(
+            effect_id, &desired, full_frame, sizeof(full_frame));
+        if (err == ESP_OK)
+            err = send_mvs_command(full_frame, sizeof(full_frame));
         if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(20));
 
-        mvs_drc_classic_state_t after;
-        err = read_drc_classic_id(effect_id, &after);
+        mvs_drc_packed_state_t after;
+        err = read_drc_a800x_state_id(effect_id, &after);
         if (err != ESP_OK) return err;
-        if (after.fc != before.fc || after.mode != before.mode ||
-            memcmp(after.q, before.q, sizeof(before.q)) != 0 ||
-            after.pregain2 != before.pregain2 ||
-            memcmp(after.thresholds, desired.thresholds, sizeof(desired.thresholds)) != 0 ||
-            memcmp(after.ratios, desired.ratios, sizeof(desired.ratios)) != 0 ||
-            memcmp(after.attacks, desired.attacks, sizeof(desired.attacks)) != 0 ||
-            memcmp(after.releases, desired.releases, sizeof(desired.releases)) != 0 ||
-            after.pregain1 != desired.pregain1 || after.enabled != desired.enabled)
+        if (memcmp(&after, &desired, sizeof(after)) != 0)
             return ESP_ERR_INVALID_RESPONSE;
-        return mvs_drc_classic_to_view(&after, confirmed);
+        return mvs_drc_a800x_to_view(&after, confirmed);
     }
-    return ESP_ERR_NOT_SUPPORTED;
+
+    if (path->drc_schema != MVS_DRC_SCHEMA_UNIFIED_2BAND)
+        return ESP_ERR_NOT_SUPPORTED;
+
+    mvs_drc_state_t before;
+    esp_err_t err = read_drc_state_id(effect_id, &before);
+    if (err != ESP_OK) return err;
+    dsp_drc_view_t current;
+    mvs_drc_state_t requested_layout = {.mode = requested->mode};
+    mvs_drc_state_to_view(&requested_layout, &current);
+    if (requested->mode > 6) return ESP_ERR_INVALID_ARG;
+
+    mvs_drc_state_t desired = before;
+    desired.mode = requested->mode;
+    desired.enabled = requested->enabled ? 1U : 0U;
+    if (current.crossover_visible)
+        desired.crossover_hz = requested->crossover_hz;
+    if (current.q_visible) {
+        desired.q_lp_raw = (uint16_t)lround(requested->q_lp * 1024.0);
+        desired.q_hp_raw = (uint16_t)lround(requested->q_hp * 1024.0);
+    }
+    for (size_t i = 0; i < MVS_DRC_BAND_COUNT; ++i) {
+        bool visible = i == MVS_DRC_BAND_FULL
+            ? current.full_band_supported : current.lower_upper_visible;
+        if (!visible) continue;
+        desired.thresholds[i] =
+            (int16_t)lround(requested->bands[i].threshold_db * 100.0);
+        desired.ratios[i] = (uint16_t)lround(requested->bands[i].ratio);
+        desired.attacks[i] = requested->bands[i].attack_ms;
+        desired.releases[i] = requested->bands[i].release_ms;
+    }
+    if (current.lower_upper_visible || current.full_band_supported) {
+        size_t pregain_band = current.lower_upper_visible
+            ? MVS_DRC_BAND_LOWER : MVS_DRC_BAND_FULL;
+        desired.pregain_lower = (uint16_t)lround(
+            4096.0 * pow(10.0, requested->bands[pregain_band].pregain_db / 20.0));
+    }
+    if (current.lower_upper_visible) {
+        desired.pregain_upper = (uint16_t)lround(
+            4096.0 * pow(10.0, requested->bands[MVS_DRC_BAND_UPPER].pregain_db / 20.0));
+    }
+
+    if (desired.mode != before.mode) {
+        uint8_t frame[8];
+        err = mvs_build_write_frame(effect_id, 0x02, desired.mode,
+                                    frame, sizeof(frame));
+        if (err == ESP_OK) err = send_mvs_command(frame, sizeof(frame));
+        if (err == ESP_OK) vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    uint16_t values[3];
+    for (size_t i = 0; i < 3; ++i) values[i] = (uint16_t)desired.thresholds[i];
+    err = send_u16_array(effect_id, 4, values, 3);
+    for (size_t i = 0; err == ESP_OK && i < 3; ++i) values[i] = desired.ratios[i];
+    if (err == ESP_OK) err = send_u16_array(effect_id, 5, values, 3);
+    for (size_t i = 0; err == ESP_OK && i < 3; ++i) values[i] = desired.attacks[i];
+    if (err == ESP_OK) err = send_u16_array(effect_id, 6, values, 3);
+    for (size_t i = 0; err == ESP_OK && i < 3; ++i) values[i] = desired.releases[i];
+    if (err == ESP_OK) err = send_u16_array(effect_id, 7, values, 3);
+
+    const struct { uint8_t selector; uint16_t value; bool write; } scalar[] = {
+        {1, desired.crossover_hz, current.crossover_visible},
+        {3, desired.q_lp_raw, current.q_visible},
+        {3, desired.q_hp_raw, false}, /* selector 3 is written as an array below */
+        {8, desired.pregain_lower, true},
+        {9, desired.pregain_upper, current.lower_upper_visible},
+        {0, desired.enabled, true},
+    };
+    if (err == ESP_OK && current.q_visible) {
+        uint16_t qs[] = {desired.q_lp_raw, desired.q_hp_raw};
+        err = send_u16_array(effect_id, 3, qs, 2);
+    }
+    for (size_t i = 0; err == ESP_OK && i < sizeof(scalar) / sizeof(scalar[0]); ++i) {
+        if (!scalar[i].write || scalar[i].selector == 3) continue;
+        uint8_t frame[8];
+        err = mvs_build_write_frame(effect_id, scalar[i].selector,
+                                    scalar[i].value, frame, sizeof(frame));
+        if (err == ESP_OK) {
+            err = send_mvs_command(frame, sizeof(frame));
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+    if (err != ESP_OK) return err;
+
+    mvs_drc_state_t after;
+    err = read_drc_state_id(effect_id, &after);
+    if (err != ESP_OK) return err;
+    if (memcmp(&after, &desired, sizeof(after)) != 0)
+        return ESP_ERR_INVALID_RESPONSE;
+    return mvs_drc_state_to_view(&after, confirmed);
 }
 
 // ---------------------------------------------------------------------------
@@ -888,13 +1032,7 @@ void dsp_model_profile_apply_drc_view(dsp_profile_t *profile,
 {
     if (!profile || !view) return;
     memset(&profile->drc, 0, sizeof(profile->drc));
-    profile->drc.enabled = view->enabled ? 1U : 0U;
-    profile->drc.mode = 0;
-    profile->drc.pregains[3] = (uint16_t)lround(4096.0 * pow(10.0, view->pregain_db / 20.0));
-    profile->drc.thresholds[3] = (int16_t)lround(view->threshold_db * 100.0);
-    profile->drc.ratios[3] = (uint16_t)lround(view->ratio * 100.0);
-    profile->drc.attacks[3] = view->attack_ms;
-    profile->drc.releases[3] = view->release_ms;
+    store_drc_view(profile, view);
 }
 
 // ---------------------------------------------------------------------------
@@ -909,6 +1047,7 @@ esp_err_t dsp_model_verify_full_profile(const dsp_profile_t *expected)
 esp_err_t dsp_model_verify_multi_config(const dsp_multi_config_t *expected)
 {
     if (!expected) return ESP_ERR_INVALID_ARG;
+    s_verify_mismatch[0] = '\0';
     esp_err_t err = dsp_model_verify_path_profile(MVS_PATH_MUSIC, &expected->music);
     if (err != ESP_OK) return err;
     if (expected->rec_valid && s_device_profile.paths[MVS_PATH_REC].present) {
@@ -942,14 +1081,29 @@ esp_err_t dsp_model_verify_path_profile(mvs_path_id_t path_id,
     // Virtual Bass
     if (dev->virtual_bass.available) {
         bool en, enh; uint16_t cut, it;
-        esp_err_t err = dsp_model_read_virtual_bass(&en, &cut, &it, &enh);
-        if (err != ESP_OK) return err;
-        if (en != expected->virtual_bass_enabled) return ESP_ERR_INVALID_RESPONSE;
-        if (expected->virtual_bass_enabled &&
-            (cut != expected->virtual_bass_cutoff_hz ||
-             it != expected->virtual_bass_intensity_pct ||
-             enh != expected->virtual_bass_enhanced))
-            return ESP_ERR_INVALID_RESPONSE;
+        esp_err_t err = dsp_model_read_virtual_bass_path(
+            path_id, &en, &cut, &it, &enh);
+        if (err != ESP_OK)
+            return verify_mismatch_i64(path_id, "virtual_bass",
+                dev->virtual_bass.effect_id, "read_error", ESP_OK, err);
+        if (en != expected->virtual_bass_enabled)
+            return verify_mismatch_i64(path_id, "virtual_bass",
+                dev->virtual_bass.effect_id, "enabled",
+                expected->virtual_bass_enabled, en);
+        if (expected->virtual_bass_enabled) {
+            if (cut != expected->virtual_bass_cutoff_hz)
+                return verify_mismatch_i64(path_id, "virtual_bass",
+                    dev->virtual_bass.effect_id, "cutoff_hz",
+                    expected->virtual_bass_cutoff_hz, cut);
+            if (it != expected->virtual_bass_intensity_pct)
+                return verify_mismatch_i64(path_id, "virtual_bass",
+                    dev->virtual_bass.effect_id, "intensity_pct",
+                    expected->virtual_bass_intensity_pct, it);
+            if (enh != expected->virtual_bass_enhanced)
+                return verify_mismatch_i64(path_id, "virtual_bass",
+                    dev->virtual_bass.effect_id, "enhanced",
+                    expected->virtual_bass_enhanced, enh);
+        }
     }
 
     // VB Classic (path-aware)
@@ -987,8 +1141,33 @@ esp_err_t dsp_model_verify_path_profile(mvs_path_id_t path_id,
         mvs_preeq_state_t state;
         esp_err_t err = dsp_model_read_preeq_path(path_id, &state);
         if (err != ESP_OK) return err;
-        if (memcmp(&state, &expected->preeq, sizeof(state)) != 0)
-            return ESP_ERR_INVALID_RESPONSE;
+#define VERIFY_PREEQ_FIELD(field_) do { \
+    if (state.field_ != expected->preeq.field_) \
+        return verify_mismatch_i64(path_id, "preeq", dev->preeq.effect_id, \
+            #field_, expected->preeq.field_, state.field_); \
+} while (0)
+        VERIFY_PREEQ_FIELD(block_enabled);
+        VERIFY_PREEQ_FIELD(pre_gain_raw);
+#undef VERIFY_PREEQ_FIELD
+        for (size_t i = 0; i < 10; ++i) {
+            const mvs_preeq_filter_t *actual = &state.filters[i];
+            const mvs_preeq_filter_t *exp = &expected->preeq.filters[i];
+            char field[40];
+#define VERIFY_PREEQ_FILTER_FIELD(member_) do { \
+    if (actual->member_ != exp->member_) { \
+        snprintf(field, sizeof(field), "filters[%u].%s", \
+                 (unsigned)i, #member_); \
+        return verify_mismatch_i64(path_id, "preeq", dev->preeq.effect_id, \
+            field, exp->member_, actual->member_); \
+    } \
+} while (0)
+            VERIFY_PREEQ_FILTER_FIELD(enabled);
+            VERIFY_PREEQ_FILTER_FIELD(type);
+            VERIFY_PREEQ_FILTER_FIELD(frequency_hz);
+            VERIFY_PREEQ_FILTER_FIELD(q_raw);
+            VERIFY_PREEQ_FILTER_FIELD(gain_raw);
+#undef VERIFY_PREEQ_FILTER_FIELD
+        }
     }
 
     // Out EQ
@@ -996,19 +1175,85 @@ esp_err_t dsp_model_verify_path_profile(mvs_path_id_t path_id,
         mvs_preeq_state_t state;
         esp_err_t err = dsp_model_read_outeq_path(path_id, &state);
         if (err != ESP_OK) return err;
-        if (memcmp(&state, &expected->out_eq, sizeof(state)) != 0)
-            return ESP_ERR_INVALID_RESPONSE;
+#define VERIFY_OUTEQ_FIELD(field_) do { \
+    if (state.field_ != expected->out_eq.field_) \
+        return verify_mismatch_i64(path_id, "out_eq", dev->out_eq.effect_id, \
+            #field_, expected->out_eq.field_, state.field_); \
+} while (0)
+        VERIFY_OUTEQ_FIELD(block_enabled);
+        VERIFY_OUTEQ_FIELD(pre_gain_raw);
+#undef VERIFY_OUTEQ_FIELD
+        for (size_t i = 0; i < 10; ++i) {
+            const mvs_preeq_filter_t *actual = &state.filters[i];
+            const mvs_preeq_filter_t *exp = &expected->out_eq.filters[i];
+            char field[40];
+#define VERIFY_OUTEQ_FILTER_FIELD(member_) do { \
+    if (actual->member_ != exp->member_) { \
+        snprintf(field, sizeof(field), "filters[%u].%s", \
+                 (unsigned)i, #member_); \
+        return verify_mismatch_i64(path_id, "out_eq", dev->out_eq.effect_id, \
+            field, exp->member_, actual->member_); \
+    } \
+} while (0)
+            VERIFY_OUTEQ_FILTER_FIELD(enabled);
+            VERIFY_OUTEQ_FILTER_FIELD(type);
+            VERIFY_OUTEQ_FILTER_FIELD(frequency_hz);
+            VERIFY_OUTEQ_FILTER_FIELD(q_raw);
+            VERIFY_OUTEQ_FILTER_FIELD(gain_raw);
+#undef VERIFY_OUTEQ_FILTER_FIELD
+        }
     }
 
     // DRC
     if (dev->drc.available) {
         dsp_drc_view_t view;
         esp_err_t err = dsp_model_read_drc_view_path(path_id, &view);
-        if (err != ESP_OK) return err;
+        if (err != ESP_OK) {
+            return verify_error(path_id, "drc", dev->drc.effect_id,
+                "full_read", "readable", "not_read", err);
+        }
         dsp_drc_view_t exp;
         load_drc_view(expected, &exp);
-        if (memcmp(&view, &exp, sizeof(view)) != 0)
-            return ESP_ERR_INVALID_RESPONSE;
+#define VERIFY_DRC_I64(field_, expected_, actual_) do { \
+    if ((long long)(expected_) != (long long)(actual_)) \
+        return verify_mismatch_i64(path_id, "drc", dev->drc.effect_id, \
+            field_, (long long)(expected_), (long long)(actual_)); \
+} while (0)
+        VERIFY_DRC_I64("enabled", exp.enabled, view.enabled);
+        VERIFY_DRC_I64("mode", exp.mode, view.mode);
+        if (exp.crossover_visible) {
+            VERIFY_DRC_I64("crossover_hz", exp.crossover_hz, view.crossover_hz);
+        }
+        if (exp.q_visible) {
+            VERIFY_DRC_I64("q_lp_raw", lround(exp.q_lp * 1024.0),
+                           lround(view.q_lp * 1024.0));
+            VERIFY_DRC_I64("q_hp_raw", lround(exp.q_hp * 1024.0),
+                           lround(view.q_hp * 1024.0));
+        }
+        for (size_t i = 0; i < MVS_DRC_BAND_COUNT; ++i) {
+            if ((i == MVS_DRC_BAND_FULL && !exp.full_band_supported) ||
+                (i != MVS_DRC_BAND_FULL && !exp.lower_upper_visible)) {
+                continue;
+            }
+            char field[48];
+#define VERIFY_DRC_BAND_DOUBLE(member_, scale_) do { \
+    snprintf(field, sizeof(field), "bands[%u].%s", \
+             (unsigned)i, #member_); \
+    VERIFY_DRC_I64(field, lround(exp.bands[i].member_ * (scale_)), \
+                   lround(view.bands[i].member_ * (scale_))); \
+} while (0)
+            VERIFY_DRC_BAND_DOUBLE(pregain_db, 100.0);
+            VERIFY_DRC_BAND_DOUBLE(threshold_db, 100.0);
+            VERIFY_DRC_BAND_DOUBLE(ratio, 100.0);
+#undef VERIFY_DRC_BAND_DOUBLE
+            snprintf(field, sizeof(field), "bands[%u].attack_ms", (unsigned)i);
+            VERIFY_DRC_I64(field, exp.bands[i].attack_ms,
+                           view.bands[i].attack_ms);
+            snprintf(field, sizeof(field), "bands[%u].release_ms", (unsigned)i);
+            VERIFY_DRC_I64(field, exp.bands[i].release_ms,
+                           view.bands[i].release_ms);
+        }
+#undef VERIFY_DRC_I64
     }
 
     // USB Out Gain
@@ -1444,27 +1689,22 @@ esp_err_t dsp_model_set_preeq_enable(bool enable)
 
 esp_err_t dsp_model_set_drc_enable(bool enable)
 {
-    mvs_drc_packed_state_t state;
-    esp_err_t err = dsp_model_read_drc(&state);
+    dsp_drc_view_t state, confirmed;
+    esp_err_t err = dsp_model_read_drc_view(&state);
     if (err != ESP_OK) return err;
     state.enabled = enable ? 1 : 0;
-    return dsp_model_update_drc(&state);
+    return dsp_model_update_drc_view(&state, &confirmed);
 }
 
 esp_err_t dsp_model_update_drc(const mvs_drc_packed_state_t *state)
 {
     if (!state) return ESP_ERR_INVALID_ARG;
-    if (!s_device_profile.drc.available ||
-        s_device_profile.drc_schema != MVS_DRC_SCHEMA_A800X_4PATH)
-        return ESP_ERR_NOT_SUPPORTED;
-
-    uint8_t drc_id = s_device_profile.drc.effect_id;
-    uint8_t frame[60];
-
-    esp_err_t err = mvs_build_drc_a800x_full_frame(drc_id, state,
-                                                    frame, sizeof(frame));
-    if (err != ESP_OK) return err;
-    return send_mvs_command(frame, sizeof(frame));
+    dsp_profile_t profile = {0};
+    profile.drc = *state;
+    profile.drc_readback_valid = true;
+    dsp_drc_view_t requested, confirmed;
+    load_drc_view(&profile, &requested);
+    return dsp_model_update_drc_view(&requested, &confirmed);
 }
 
 static void load_drc_view(const dsp_profile_t *profile, dsp_drc_view_t *view)
@@ -1473,25 +1713,52 @@ static void load_drc_view(const dsp_profile_t *profile, dsp_drc_view_t *view)
     memset(view, 0, sizeof(*view));
     view->valid = true;
     view->enabled = profile->drc.enabled != 0;
-    view->full_band_supported = true;
-    view->pregain_db = (profile->drc.pregains[3] / 4096.0) > 0.0
-        ? 20.0 * log10(profile->drc.pregains[3] / 4096.0) : -72.0;
-    view->threshold_db = profile->drc.thresholds[3] / 100.0;
-    view->ratio = profile->drc.ratios[3] / 100.0;
-    view->attack_ms = profile->drc.attacks[3];
-    view->release_ms = profile->drc.releases[3];
+    view->mode = profile->drc.mode;
+    view->crossover_hz = profile->drc.crossover_freq1_hz;
+    view->q_lp = profile->drc.crossover_q1_raw / 1024.0;
+    view->q_hp = profile->drc.crossover_q2_raw / 1024.0;
+    mvs_drc_state_t layout = {.mode = view->mode};
+    dsp_drc_view_t flags;
+    mvs_drc_state_to_view(&layout, &flags);
+    view->lower_upper_visible = flags.lower_upper_visible;
+    view->full_band_supported = flags.full_band_supported;
+    view->crossover_visible = flags.crossover_visible;
+    view->q_visible = flags.q_visible;
+    for (size_t i = 0; i < MVS_DRC_BAND_COUNT; ++i) {
+        size_t src = i == MVS_DRC_BAND_FULL ? 3 : i;
+        view->bands[i].pregain_db = profile->drc.pregains[src] > 0
+            ? 20.0 * log10(profile->drc.pregains[src] / 4096.0) : -72.0;
+        view->bands[i].threshold_db = profile->drc.thresholds[src] / 100.0;
+        view->bands[i].ratio = profile->drc.ratios[src] / 100.0;
+        view->bands[i].attack_ms = profile->drc.attacks[src];
+        view->bands[i].release_ms = profile->drc.releases[src];
+    }
 }
 
 static void store_drc_view(dsp_profile_t *profile, const dsp_drc_view_t *view)
 {
     if (!profile || !view) return;
+    memset(&profile->drc, 0, sizeof(profile->drc));
     profile->drc.enabled = view->enabled ? 1U : 0U;
-    profile->drc.mode = 0;
-    profile->drc.thresholds[3] = (int16_t)lround(view->threshold_db * 100.0);
-    profile->drc.ratios[3] = (uint16_t)lround(view->ratio * 100.0);
-    profile->drc.attacks[3] = view->attack_ms;
-    profile->drc.releases[3] = view->release_ms;
-    profile->drc.pregains[3] = (uint16_t)lround(4096.0 * pow(10.0, view->pregain_db / 20.0));
+    profile->drc.mode = view->mode;
+    profile->drc.crossover_freq1_hz = view->crossover_hz;
+    profile->drc.crossover_q1_raw = (uint16_t)lround(view->q_lp * 1024.0);
+    profile->drc.crossover_q2_raw = (uint16_t)lround(view->q_hp * 1024.0);
+    for (size_t i = 0; i < MVS_DRC_BAND_COUNT; ++i) {
+        size_t dst = i == MVS_DRC_BAND_FULL ? 3 : i;
+        profile->drc.thresholds[dst] =
+            (int16_t)lround(view->bands[i].threshold_db * 100.0);
+        profile->drc.ratios[dst] =
+            (uint16_t)lround(view->bands[i].ratio * 100.0);
+        profile->drc.attacks[dst] = view->bands[i].attack_ms;
+        profile->drc.releases[dst] = view->bands[i].release_ms;
+        profile->drc.pregains[dst] =
+            view->bands[i].pregain_db <= -72.0
+                ? 0U
+                : (uint16_t)lround(
+                    4096.0 *
+                    pow(10.0, view->bands[i].pregain_db / 20.0));
+    }
 }
 
 static inline uint16_t read_u16_le(const uint8_t *buf)

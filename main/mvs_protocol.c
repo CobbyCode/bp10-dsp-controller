@@ -410,21 +410,21 @@ esp_err_t mvs_decode_drc_a800x(const uint8_t *data, uint16_t length,
 }
 
 // ---------------------------------------------------------------------------
-// Decoder — Classic DRC (38 Byte, 3-Band)
+// Decoder — gemeinsamer DRC (38 Byte Payload)
 // ---------------------------------------------------------------------------
 
-esp_err_t mvs_decode_drc_classic(const uint8_t *data, uint16_t length,
-                                  mvs_drc_classic_state_t *state)
+esp_err_t mvs_decode_drc_state(const uint8_t *data, uint16_t length,
+                               mvs_drc_state_t *state)
 {
     if (!state || length < 38) return ESP_ERR_INVALID_SIZE;
 
     memset(state, 0, sizeof(*state));
 
     state->enabled = read_u16_le(data + 0);
-    state->fc      = read_u16_le(data + 2);
+    state->crossover_hz = read_u16_le(data + 2);
     state->mode    = read_u16_le(data + 4);
-    state->q[0]    = read_u16_le(data + 6);
-    state->q[1]    = read_u16_le(data + 8);
+    state->q_lp_raw = read_u16_le(data + 6);
+    state->q_hp_raw = read_u16_le(data + 8);
 
     for (int i = 0; i < 3; i++) {
         state->thresholds[i] = (int16_t)read_u16_le(data + 10 + i*2);
@@ -433,8 +433,8 @@ esp_err_t mvs_decode_drc_classic(const uint8_t *data, uint16_t length,
         state->releases[i]   = read_u16_le(data + 28 + i*2);
     }
 
-    state->pregain1 = read_u16_le(data + 34);
-    state->pregain2 = read_u16_le(data + 36);
+    state->pregain_lower = read_u16_le(data + 34);
+    state->pregain_upper = read_u16_le(data + 36);
 
     return ESP_OK;
 }
@@ -443,30 +443,58 @@ esp_err_t mvs_decode_drc_classic(const uint8_t *data, uint16_t length,
 // DRC-View-Adapter
 // ---------------------------------------------------------------------------
 
-esp_err_t mvs_drc_classic_to_view(const mvs_drc_classic_state_t *state,
-                                   dsp_drc_view_t *view)
+esp_err_t mvs_drc_state_to_view(const mvs_drc_state_t *state,
+                                dsp_drc_view_t *view)
 {
     if (!state || !view) return ESP_ERR_INVALID_ARG;
     memset(view, 0, sizeof(*view));
 
-    if (state->mode != 2) {
-        // Full-Band mode = 2, index = 2
-        view->valid = false;
-        view->full_band_supported = false;
-        return ESP_ERR_INVALID_ARG;
+    /*
+     * ACPWorkbench DRC modes:
+     * 0   Full Band
+     * 1-3 2 Band (Butterworth order 1/order 2/custom Q)
+     * 4-6 the corresponding 2 Band modes plus a Full Band stage.
+     * Only the custom-filter modes expose Q(LP)/Q(HP).
+     */
+    switch (state->mode) {
+        case 0:
+            view->full_band_supported = true;
+            break;
+        case 1:
+        case 2:
+        case 3:
+            view->lower_upper_visible = true;
+            view->crossover_visible = true;
+            view->q_visible = state->mode == 3;
+            break;
+        case 4:
+        case 5:
+        case 6:
+            view->lower_upper_visible = true;
+            view->full_band_supported = true;
+            view->crossover_visible = true;
+            view->q_visible = state->mode == 6;
+            break;
+        default:
+            break;
     }
 
-    const int fb = 2;  // Full-Band index = 2
     view->valid = true;
     view->enabled = state->enabled != 0;
-    view->full_band_supported = true;
-    view->pregain_db = (state->pregain1 / 4096.0) > 0.0
-                       ? 20.0 * log10(state->pregain1 / 4096.0)
-                       : -72.0;
-    view->threshold_db = state->thresholds[fb] / 100.0;
-    view->ratio = state->ratios[fb];  // Direktwert
-    view->attack_ms = state->attacks[fb];
-    view->release_ms = state->releases[fb];
+    view->mode = state->mode;
+    view->crossover_hz = state->crossover_hz;
+    view->q_lp = state->q_lp_raw / 1024.0;
+    view->q_hp = state->q_hp_raw / 1024.0;
+    for (size_t i = 0; i < MVS_DRC_BAND_COUNT; ++i) {
+        uint16_t pregain = i == MVS_DRC_BAND_UPPER
+            ? state->pregain_upper : state->pregain_lower;
+        view->bands[i].pregain_db = pregain > 0
+            ? 20.0 * log10(pregain / 4096.0) : -72.0;
+        view->bands[i].threshold_db = state->thresholds[i] / 100.0;
+        view->bands[i].ratio = state->ratios[i];
+        view->bands[i].attack_ms = state->attacks[i];
+        view->bands[i].release_ms = state->releases[i];
+    }
 
     return ESP_OK;
 }
@@ -480,14 +508,18 @@ esp_err_t mvs_drc_a800x_to_view(const mvs_drc_packed_state_t *state,
     const int fb = 3;  // A800X Full-Band index = 3
     view->valid = true;
     view->enabled = state->enabled != 0;
+    view->mode = state->mode;
     view->full_band_supported = (state->mode == 0);
-    view->pregain_db = (state->pregains[fb] / 4096.0) > 0.0
-                       ? 20.0 * log10(state->pregains[fb] / 4096.0)
-                       : -72.0;
-    view->threshold_db = state->thresholds[fb] / 100.0;
-    view->ratio = state->ratios[fb] / 100.0;
-    view->attack_ms = state->attacks[fb];
-    view->release_ms = state->releases[fb];
+    /* A800X clamps the zero/silence pregain sentinel to raw 1. Treat both
+     * representations as the same semantic -72 dB floor. */
+    view->bands[MVS_DRC_BAND_FULL].pregain_db =
+        state->pregains[fb] <= 1
+            ? -72.0
+            : 20.0 * log10(state->pregains[fb] / 4096.0);
+    view->bands[MVS_DRC_BAND_FULL].threshold_db = state->thresholds[fb] / 100.0;
+    view->bands[MVS_DRC_BAND_FULL].ratio = state->ratios[fb] / 100.0;
+    view->bands[MVS_DRC_BAND_FULL].attack_ms = state->attacks[fb];
+    view->bands[MVS_DRC_BAND_FULL].release_ms = state->releases[fb];
 
     return ESP_OK;
 }

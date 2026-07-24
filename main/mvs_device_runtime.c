@@ -144,11 +144,8 @@ static void validate_module(mvs_device_profile_t *profile,
         valid = mvs_decode_preeq(state, state_len, &peq) == ESP_OK;
     } else if (valid && module == MVS_MODULE_DRC) {
         if (state_len == 38) {
-            mvs_drc_classic_state_t drc;
-            valid = mvs_decode_drc_classic(state, state_len, &drc) == ESP_OK;
-        } else if (state_len == 54) {
-            mvs_drc_packed_state_t drc;
-            valid = mvs_decode_drc_a800x(state, state_len, &drc) == ESP_OK;
+            mvs_drc_state_t drc;
+            valid = mvs_decode_drc_state(state, state_len, &drc) == ESP_OK;
         } else valid = false;
     } else if (valid && module == MVS_MODULE_USB_OUT_GAIN) {
         uint16_t gain_raw = 0;

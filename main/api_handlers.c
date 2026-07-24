@@ -330,11 +330,12 @@ static esp_err_t handler_status_get(httpd_req_t *req)
         device_profile->preeq_schema == MVS_PEQ_SCHEMA_CLASSIC_10BAND ?
         "classic_10band" : "none");
     cJSON_AddStringToObject(caps, "drc_schema",
-        device_profile->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH ? "a800x_4path" :
-        device_profile->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ?
-        "classic_3band" : "none");
+        device_profile->drc_schema == MVS_DRC_SCHEMA_UNIFIED_2BAND ?
+        "unified_2band" :
+        device_profile->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH ?
+        "a800x_4path" : "none");
     cJSON_AddNumberToObject(caps, "drc_ratio_step",
-        device_profile->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ? 1.0 : 0.01);
+        device_profile->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH ? 0.01 : 1.0);
     cJSON_AddBoolToObject(caps, "factory_defaults", a800x);
 
     cJSON *paths = cJSON_AddObjectToObject(root, "paths");
@@ -365,8 +366,13 @@ static esp_err_t handler_status_get(httpd_req_t *req)
             "classic_10band" : "none");
         cJSON_AddBoolToObject(pc, "out_eq", path->out_eq.available);
         cJSON_AddBoolToObject(pc, "drc", path->drc.available);
+        cJSON_AddStringToObject(pc, "drc_schema",
+            path->drc_schema == MVS_DRC_SCHEMA_UNIFIED_2BAND ?
+            "unified_2band" :
+            path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH ?
+            "a800x_4path" : "none");
         cJSON_AddNumberToObject(pc, "drc_ratio_step",
-            path->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND ? 1.0 : 0.01);
+            path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH ? 0.01 : 1.0);
         cJSON_AddBoolToObject(pc, "usb_out_gain",
                               path->usb_out_gain.available);
         cJSON_AddBoolToObject(pc, "silence_detector",
@@ -390,9 +396,9 @@ static esp_err_t handler_status_get(httpd_req_t *req)
     // SoftAP
     bool ap_active = wifi_manager_is_softap_active();
     cJSON_AddBoolToObject(root, "ap_active", ap_active);
+    cJSON_AddStringToObject(root, "ap_ip", "192.168.4.1");
     if (ap_active) {
         cJSON_AddStringToObject(root, "ap_ssid", hostname);
-        cJSON_AddStringToObject(root, "ap_ip", "192.168.4.1");
         cJSON_AddStringToObject(root, "ap_auth", "offen");
     }
     int ap_shutdown_s = wifi_manager_get_ap_shutdown_remaining_sec();
@@ -422,6 +428,29 @@ static esp_err_t handler_status_get(httpd_req_t *req)
 // ---------------------------------------------------------------------------
 // GET /api/dsp — committed ESP-Profil (kein DSP-Readback)
 // ---------------------------------------------------------------------------
+
+static void add_drc_view(cJSON *drc, const dsp_drc_view_t *view)
+{
+    static const char *names[MVS_DRC_BAND_COUNT] = {"lower", "upper", "full"};
+    cJSON_AddBoolToObject(drc, "enabled", view->enabled);
+    cJSON_AddNumberToObject(drc, "mode", view->mode);
+    cJSON_AddBoolToObject(drc, "lower_upper_visible", view->lower_upper_visible);
+    cJSON_AddBoolToObject(drc, "full_band_supported", view->full_band_supported);
+    cJSON_AddBoolToObject(drc, "crossover_visible", view->crossover_visible);
+    cJSON_AddBoolToObject(drc, "q_visible", view->q_visible);
+    cJSON_AddNumberToObject(drc, "crossover_hz", view->crossover_hz);
+    cJSON_AddNumberToObject(drc, "q_lp", view->q_lp);
+    cJSON_AddNumberToObject(drc, "q_hp", view->q_hp);
+    cJSON *bands = cJSON_AddObjectToObject(drc, "bands");
+    for (size_t i = 0; i < MVS_DRC_BAND_COUNT; ++i) {
+        cJSON *band = cJSON_AddObjectToObject(bands, names[i]);
+        cJSON_AddNumberToObject(band, "pregain_db", view->bands[i].pregain_db);
+        cJSON_AddNumberToObject(band, "threshold_db", view->bands[i].threshold_db);
+        cJSON_AddNumberToObject(band, "ratio", view->bands[i].ratio);
+        cJSON_AddNumberToObject(band, "attack_ms", view->bands[i].attack_ms);
+        cJSON_AddNumberToObject(band, "release_ms", view->bands[i].release_ms);
+    }
+}
 
 static esp_err_t handler_dsp_get(httpd_req_t *req)
 {
@@ -522,13 +551,7 @@ static esp_err_t handler_dsp_get(httpd_req_t *req)
     cJSON_AddBoolToObject(drc, "read_success", drc_err == ESP_OK);
     cJSON_AddNumberToObject(drc, "readback_ms", (double)readback_ms);
     if (drc_err == ESP_OK) {
-        cJSON_AddBoolToObject(drc, "enabled", drc_view.enabled);
-        cJSON_AddBoolToObject(drc, "full_band_supported", drc_view.full_band_supported);
-        cJSON_AddNumberToObject(drc, "pregain_db", drc_view.pregain_db);
-        cJSON_AddNumberToObject(drc, "threshold_db", drc_view.threshold_db);
-        cJSON_AddNumberToObject(drc, "ratio", drc_view.ratio);
-        cJSON_AddNumberToObject(drc, "attack_ms", drc_view.attack_ms);
-        cJSON_AddNumberToObject(drc, "release_ms", drc_view.release_ms);
+        add_drc_view(drc, &drc_view);
         cJSON_AddBoolToObject(root, "drc_enabled", drc_view.enabled);
     }
 
@@ -650,14 +673,7 @@ static esp_err_t handler_dsp_state_get(httpd_req_t *req)
     cJSON *drc = cJSON_AddObjectToObject(root, "drc");
     cJSON_AddBoolToObject(drc, "valid", drc_ok);
     if (drc_ok) {
-        cJSON_AddBoolToObject(drc, "enabled", drc_view.enabled);
-        cJSON_AddBoolToObject(drc, "full_band_supported",
-                              drc_view.full_band_supported);
-        cJSON_AddNumberToObject(drc, "pregain_db", drc_view.pregain_db);
-        cJSON_AddNumberToObject(drc, "threshold_db", drc_view.threshold_db);
-        cJSON_AddNumberToObject(drc, "ratio", drc_view.ratio);
-        cJSON_AddNumberToObject(drc, "attack_ms", drc_view.attack_ms);
-        cJSON_AddNumberToObject(drc, "release_ms", drc_view.release_ms);
+        add_drc_view(drc, &drc_view);
     }
 
     cJSON *gain = cJSON_AddObjectToObject(root, "usb_out_gain");
@@ -1450,6 +1466,36 @@ static esp_err_t handler_dsp_outeq_post(httpd_req_t *req)
 // POST /api/dsp/drc – DRC + Auto-Save
 // ---------------------------------------------------------------------------
 
+static bool parse_drc_band(const cJSON *bands, const char *name,
+                           dsp_drc_band_view_t *band, bool require_pregain,
+                           bool integer_ratio)
+{
+    const cJSON *obj = cJSON_GetObjectItem(bands, name);
+    const cJSON *pregain = cJSON_GetObjectItem(obj, "pregain_db");
+    const cJSON *threshold = cJSON_GetObjectItem(obj, "threshold_db");
+    const cJSON *ratio = cJSON_GetObjectItem(obj, "ratio");
+    const cJSON *attack = cJSON_GetObjectItem(obj, "attack_ms");
+    const cJSON *release = cJSON_GetObjectItem(obj, "release_ms");
+    if (!cJSON_IsObject(obj) || (require_pregain && !cJSON_IsNumber(pregain)) ||
+        !cJSON_IsNumber(threshold) || !cJSON_IsNumber(ratio) ||
+        !cJSON_IsNumber(attack) || !cJSON_IsNumber(release) ||
+        (require_pregain &&
+         (pregain->valuedouble < -72.0 || pregain->valuedouble > 18.0)) ||
+        threshold->valuedouble < -327.68 || threshold->valuedouble > 0.0 ||
+        ratio->valuedouble < 1.0 || ratio->valuedouble > UINT16_MAX ||
+        (integer_ratio &&
+         fabs(ratio->valuedouble - round(ratio->valuedouble)) > 0.000001) ||
+        attack->valuedouble < 0 || attack->valuedouble > UINT16_MAX ||
+        release->valuedouble < 0 || release->valuedouble > UINT16_MAX)
+        return false;
+    if (require_pregain) band->pregain_db = pregain->valuedouble;
+    band->threshold_db = threshold->valuedouble;
+    band->ratio = ratio->valuedouble;
+    band->attack_ms = (uint16_t)lround(attack->valuedouble);
+    band->release_ms = (uint16_t)lround(release->valuedouble);
+    return true;
+}
+
 static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
 {
     if (!g_dsp_connected) {
@@ -1460,7 +1506,7 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
         dsp_model_get_device_profile(), path_id);
     if (!path || !path->drc.available)
         return send_error(req, 400, "Missing or invalid path");
-    char buf[256];
+    char buf[1024];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) return send_error(req, 400, "No data");
     buf[len] = '\0';
@@ -1468,46 +1514,94 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
     if (!json) return send_error(req, 400, "Invalid JSON");
 
     cJSON *enable = cJSON_GetObjectItem(json, "enable");
-    cJSON *pregain = cJSON_GetObjectItem(json, "pregain_db");
-    cJSON *threshold = cJSON_GetObjectItem(json, "threshold_db");
-    cJSON *ratio = cJSON_GetObjectItem(json, "ratio");
-    cJSON *attack = cJSON_GetObjectItem(json, "attack_ms");
-    cJSON *release = cJSON_GetObjectItem(json, "release_ms");
-    if (!cJSON_IsBool(enable) || !cJSON_IsNumber(pregain) ||
-        !cJSON_IsNumber(threshold) || !cJSON_IsNumber(ratio) ||
-        !cJSON_IsNumber(attack) || !cJSON_IsNumber(release) ||
-        pregain->valuedouble < -72.0 || pregain->valuedouble > 24.0 ||
-        threshold->valuedouble < -327.68 || threshold->valuedouble > 0.0 ||
-        ratio->valuedouble < 0.01 || ratio->valuedouble > 655.35 ||
-        attack->valuedouble < 0 || attack->valuedouble > UINT16_MAX ||
-        release->valuedouble < 0 || release->valuedouble > UINT16_MAX) {
+    cJSON *mode = cJSON_GetObjectItem(json, "mode");
+    cJSON *bands = cJSON_GetObjectItem(json, "bands");
+    cJSON *mode_only_json = cJSON_GetObjectItem(json, "mode_only");
+    bool mode_only = cJSON_IsTrue(mode_only_json);
+    if (!cJSON_IsNumber(mode) || mode->valueint < 0 || mode->valueint > 6 ||
+        (!mode_only && (!cJSON_IsBool(enable) || !cJSON_IsObject(bands)))) {
         cJSON_Delete(json);
-        return send_error(req, 400, "Invalid Full-Band DRC values");
+        return send_error(req, 400, "Invalid DRC state");
     }
 
-    if (path->drc_schema == MVS_DRC_SCHEMA_CLASSIC_3BAND &&
-        fabs(ratio->valuedouble - round(ratio->valuedouble)) > 0.000001) {
+    if (mode_only) {
+        uint16_t requested_mode = (uint16_t)mode->valueint;
         cJSON_Delete(json);
-        return send_error(req, 400, "Classic DRC ratio must be an integer");
+        dsp_drc_view_t confirmed;
+        esp_err_t err = dsp_model_set_drc_mode_path(
+            path_id, requested_mode, &confirmed);
+        if (err != ESP_OK)
+            return send_error(req, 500, "DRC mode write/readback failed");
+
+        dsp_profile_t next;
+        get_path_profile(path_id, &next);
+        dsp_model_profile_apply_drc_view(&next, &confirmed);
+        esp_err_t save_err = commit_and_persist_path(path_id, &next);
+
+        cJSON *result = cJSON_CreateObject();
+        add_drc_view(result, &confirmed);
+        cJSON_AddBoolToObject(result, "confirmed", true);
+        return send_dsp_response(req, result, save_err);
     }
-    dsp_drc_view_t requested = {
-        .valid = true,
-        .enabled = cJSON_IsTrue(enable),
-        .full_band_supported = true,
-        .pregain_db = pregain->valuedouble,
-        .threshold_db = threshold->valuedouble,
-        .ratio = ratio->valuedouble,
-        .attack_ms = (uint16_t)lround(attack->valuedouble),
-        .release_ms = (uint16_t)lround(release->valuedouble),
-    };
+
+    dsp_drc_view_t requested;
+    esp_err_t err = dsp_model_read_drc_view_path(path_id, &requested);
+    if (err != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error(req, 500, "DRC read before write failed");
+    }
+    requested.enabled = cJSON_IsTrue(enable);
+    requested.mode = (uint16_t)mode->valueint;
+    mvs_drc_state_t requested_layout = {.mode = requested.mode};
+    dsp_drc_view_t layout;
+    mvs_drc_state_to_view(&requested_layout, &layout);
+    requested.lower_upper_visible = layout.lower_upper_visible;
+    requested.full_band_supported = layout.full_band_supported;
+    requested.crossover_visible = layout.crossover_visible;
+    requested.q_visible = layout.q_visible;
+    bool integer_ratio =
+        path->drc_schema == MVS_DRC_SCHEMA_UNIFIED_2BAND;
+    if ((requested.lower_upper_visible &&
+         (!parse_drc_band(bands, "lower",
+                          &requested.bands[MVS_DRC_BAND_LOWER], true,
+                          integer_ratio) ||
+          !parse_drc_band(bands, "upper",
+                          &requested.bands[MVS_DRC_BAND_UPPER], true,
+                          integer_ratio))) ||
+        (requested.full_band_supported &&
+         !parse_drc_band(bands, "full", &requested.bands[MVS_DRC_BAND_FULL],
+                         !requested.lower_upper_visible, integer_ratio))) {
+        cJSON_Delete(json);
+        return send_error(req, 400, "Invalid mode-dependent DRC values");
+    }
+    if (requested.crossover_visible) {
+        cJSON *crossover = cJSON_GetObjectItem(json, "crossover_hz");
+        if (!cJSON_IsNumber(crossover) || crossover->valuedouble < 1 ||
+            crossover->valuedouble > UINT16_MAX) {
+            cJSON_Delete(json);
+            return send_error(req, 400, "Invalid DRC crossover");
+        }
+        requested.crossover_hz = (uint16_t)lround(crossover->valuedouble);
+    }
+    if (requested.q_visible) {
+        cJSON *q_lp = cJSON_GetObjectItem(json, "q_lp");
+        cJSON *q_hp = cJSON_GetObjectItem(json, "q_hp");
+        if (!cJSON_IsNumber(q_lp) || !cJSON_IsNumber(q_hp) ||
+            q_lp->valuedouble < 0 || q_lp->valuedouble >= 64 ||
+            q_hp->valuedouble < 0 || q_hp->valuedouble >= 64) {
+            cJSON_Delete(json);
+            return send_error(req, 400, "Invalid DRC crossover Q");
+        }
+        requested.q_lp = q_lp->valuedouble;
+        requested.q_hp = q_hp->valuedouble;
+    }
     cJSON_Delete(json);
 
     dsp_drc_view_t confirmed;
-    esp_err_t err = dsp_model_update_drc_view_path(
-        path_id, &requested, &confirmed);
+    err = dsp_model_update_drc_view_path(path_id, &requested, &confirmed);
     if (err == ESP_ERR_INVALID_STATE)
         return send_error(req, 409,
-                          "DRC is not in supported Full-Band mode; no values were changed");
+                          "DRC mode changed during write; no values were changed");
     if (err != ESP_OK) return send_error(req, 500, "DRC write/readback failed");
 
     // Commit DRC-View ins Profil + gemeinsamer Persist-Abschluss
@@ -1517,14 +1611,7 @@ static esp_err_t handler_dsp_drc_post(httpd_req_t *req)
     esp_err_t save_err = commit_and_persist_path(path_id, &next);
 
     cJSON *result = cJSON_CreateObject();
-    cJSON_AddBoolToObject(result, "enabled", confirmed.enabled);
-    cJSON_AddBoolToObject(result, "full_band_supported",
-                          confirmed.full_band_supported);
-    cJSON_AddNumberToObject(result, "pregain_db", confirmed.pregain_db);
-    cJSON_AddNumberToObject(result, "threshold_db", confirmed.threshold_db);
-    cJSON_AddNumberToObject(result, "ratio", confirmed.ratio);
-    cJSON_AddNumberToObject(result, "attack_ms", confirmed.attack_ms);
-    cJSON_AddNumberToObject(result, "release_ms", confirmed.release_ms);
+    add_drc_view(result, &confirmed);
     cJSON_AddBoolToObject(result, "confirmed", true);
     return send_dsp_response(req, result, save_err);
 }
@@ -1627,12 +1714,26 @@ static esp_err_t handler_dsp_apply_post(httpd_req_t *req)
     // Auf DSP anwenden
     esp_err_t err = dsp_model_apply_multi_config(&config);
     if (err != ESP_OK) {
+        const char *detail = dsp_model_get_verify_mismatch();
+        if (detail && detail[0]) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "Failed to apply DSP configuration: %s", detail);
+            return send_error(req, 500, message);
+        }
         return send_error(req, 500, "Failed to apply DSP configuration");
     }
 
     // Targeted verify: alle Module, OFF-Module nur Enable
     err = dsp_model_verify_multi_config(&config);
     if (err != ESP_OK) {
+        const char *mismatch = dsp_model_get_verify_mismatch();
+        if (mismatch && mismatch[0]) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "DSP verification failed after apply: %s", mismatch);
+            return send_error(req, 500, message);
+        }
         return send_error(req, 500, "DSP verification failed after apply");
     }
 
@@ -1748,9 +1849,9 @@ static esp_err_t handler_wifi_status_get(httpd_req_t *req)
 
     bool ap_active = wifi_manager_is_softap_active();
     cJSON_AddBoolToObject(root, "ap_active", ap_active);
+    cJSON_AddStringToObject(root, "ap_ip", "192.168.4.1");
     if (ap_active) {
         cJSON_AddStringToObject(root, "ap_ssid", hostname);
-        cJSON_AddStringToObject(root, "ap_ip", "192.168.4.1");
         cJSON_AddStringToObject(root, "ap_auth", "offen");
     }
     int ap_shutdown_s = wifi_manager_get_ap_shutdown_remaining_sec();

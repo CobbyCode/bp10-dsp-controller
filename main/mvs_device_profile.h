@@ -49,8 +49,8 @@ typedef enum {
 
 typedef enum {
     MVS_DRC_SCHEMA_NONE = 0,
+    MVS_DRC_SCHEMA_UNIFIED_2BAND,
     MVS_DRC_SCHEMA_A800X_4PATH,
-    MVS_DRC_SCHEMA_CLASSIC_3BAND,
 } mvs_drc_schema_t;
 
 typedef enum {
@@ -200,7 +200,7 @@ typedef enum {
                 .virtual_bass = { .available = true, .effect_id = 0x97 },     \
                 .virtual_bass_classic = { .available = true, .effect_id = 0x98 }, \
                 .preeq = { .available = true, .effect_id = 0x99 },            \
-                .drc = { .available = true, .effect_id = 0x9A },              \
+                .drc = { .available = true, .effect_id = 0x9A, .state_size = 54 }, \
                 .phase = { .available = true, .effect_id = 0x96, .state_size = 4 }, \
                 .delay_hq = { .available = false },                           \
                 .usb_out_gain = { .available = false },                       \
@@ -211,7 +211,7 @@ typedef enum {
                 .has_usb_out_gain = false,                                    \
                 .has_out_eq = false,                                          \
                 .preeq_schema = MVS_PEQ_SCHEMA_A800X,                \
-                .drc_schema = MVS_DRC_SCHEMA_A800X_4PATH,            \
+                .drc_schema = MVS_DRC_SCHEMA_A800X_4PATH,           \
             },                                                              \
         },                                                                  \
         .noise_suppressor = { .available = true, .effect_id = 0x88 }, \
@@ -219,7 +219,7 @@ typedef enum {
         .virtual_bass = { .available = true, .effect_id = 0x97 },     \
         .virtual_bass_classic = { .available = true, .effect_id = 0x98 }, \
         .preeq = { .available = true, .effect_id = 0x99 },            \
-        .drc = { .available = true, .effect_id = 0x9A },              \
+        .drc = { .available = true, .effect_id = 0x9A, .state_size = 54 }, \
         .phase = { .available = true, .effect_id = 0x96, .state_size = 4 }, \
         .delay_hq = { .available = false },                            \
         .usb_out_gain = { .available = false },                        \

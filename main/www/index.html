@@ -109,14 +109,24 @@
       <details class="module-card" id="drc-module">
         <summary><span>DRC / Compressor</span><span id="drc-state" class="module-state">NOT READ</span></summary>
         <div class="module-editor">
-          <label class="switch-row"><span><strong>Full-Band Enabled</strong></span><input type="checkbox" id="drc-enable" disabled><span class="switch"></span></label>
+          <label class="switch-row"><span><strong>Enabled</strong><small id="drc-mode-label">Mode not read</small></span><input type="checkbox" id="drc-enable" disabled><span class="switch"></span></label>
           <div class="parameter-grid dsp-param-grid">
-            <label class="field"><span>Pre-Gain (dB)</span><input type="number" id="drc-pregain" step="0.01" disabled></label>
-            <label class="field"><span>Threshold (dB)</span><input type="number" id="drc-threshold" step="0.01" disabled></label>
-            <label class="field"><span>Ratio</span><input type="number" id="drc-ratio" step="0.01" disabled></label>
-            <label class="field"><span>Attack (ms)</span><input type="number" id="drc-attack" step="1" disabled></label>
-            <label class="field"><span>Release (ms)</span><input type="number" id="drc-release" step="1" disabled></label>
+            <label class="field"><span>DRC Mode</span><select id="drc-mode" disabled>
+              <option value="0">Full Band</option>
+              <option value="1">2 Band (Butter., order=1)</option>
+              <option value="2">2 Band (Butter., order=2)</option>
+              <option value="3">2 Band (Custom Q)</option>
+              <option value="4">2 Band (Butter., order=1) + Full Band</option>
+              <option value="5">2 Band (Butter., order=2) + Full Band</option>
+              <option value="6">2 Band (Custom Q) + Full Band</option>
+            </select></label>
           </div>
+          <div id="drc-crossover-fields" class="parameter-grid dsp-param-grid hidden">
+            <label class="field"><span>Crossover (Hz)</span><input type="number" id="drc-crossover" step="1" disabled></label>
+            <label id="drc-q-lp-field" class="field hidden"><span>Q (LP)</span><input type="number" id="drc-q-lp" step="0.001" disabled></label>
+            <label id="drc-q-hp-field" class="field hidden"><span>Q (HP)</span><input type="number" id="drc-q-hp" step="0.001" disabled></label>
+          </div>
+          <div id="drc-bands"></div>
           <div class="form-actions"><button id="btn-drc-reset" class="btn btn-secondary" disabled>Load Factory Values</button><button id="btn-drc-apply" class="btn btn-primary" disabled>Apply</button><span id="drc-message" class="form-message"></span></div>
         </div>
       </details>
@@ -268,6 +278,6 @@
   </section>
 </main>
 
-<script src="/app.js?v=2"></script>
+<script src="/app.js?v=3"></script>
 </body>
 </html>
