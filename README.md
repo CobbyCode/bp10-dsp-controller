@@ -92,7 +92,7 @@ Other BP10/BP1048 devices may use different firmware, effect layouts or paramete
 
 ## ESP32-S3 hardware
 
-The canonical firmware target is an ESP32-S3 board with:
+The firmware target is an ESP32-S3 board with:
 
 * 4 MB flash
 * 2 MB Quad PSRAM
@@ -100,8 +100,6 @@ The canonical firmware target is an ESP32-S3 board with:
 * Wi-Fi
 
 The release firmware and partition layout are built for this configuration.
-
-Development boards with more flash or PSRAM may also be used for development, but the published product firmware targets the 4 MB flash / 2 MB PSRAM hardware.
 
 ![BP10 controller hardware installation](docs/images/bp10-hardware-installation.png)
 
@@ -114,8 +112,7 @@ Development boards with more flash or PSRAM may also be used for development, bu
 The Pre EQ and Out EQ editors display the combined frequency response of the
 currently configured filters. Gray represents the latest confirmed DSP
 readback; green represents the local draft. After a successful Apply and
-Verify the curves overlap. Later local edits move only the preview until they
-are applied.
+Verify the curves overlap.
 
 ![BP10 Pre EQ frequency response](docs/images/bp10-preeq-response.png)
 
