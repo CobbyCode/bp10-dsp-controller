@@ -61,7 +61,6 @@ the ESP32 device name.
 * Virtual Bass
 * Virtual Bass Classic
 * Music Phase
-* Music Pre EQ
 * Music DRC through the shared schema-driven DRC implementation
 * Silence Detector
 * configuration persistence
@@ -120,18 +119,18 @@ Verify the curves overlap.
 
 The easiest first installation method is Espressif's browser-based serial flasher.
 
-1. Download `bp10-dsp-controller-full.bin` from the latest GitHub release.
+1. Download `bp10-dsp-controller-vX.X.X-full.bin` from the latest GitHub release.
 2. Open the Espressif Web Flasher in Chrome or Edge:
  `https://espressif.github.io/esptool-js/`
 3. Connect the ESP32-S3 to the computer using a USB data cable.
 4. Select the ESP32-S3 serial port.
-5. Add `bp10-dsp-controller-full.bin` at flash address **`0x0`**.
+5. Add `bp10-dsp-controller-vX.X.X-full.bin` at flash address **`0x0`**.
 6. Start programming.
 7. Restart the ESP32-S3 after flashing.
 
 When the board is not detected, hold its **BOOT** button while connecting or resetting it to enter download mode.
 
-Do not use the smaller `bp10_dsp_controller.bin` application image for the first installation. That file is intended only for firmware updates on an already installed controller.
+Do not use the smaller OTA application image for the first installation. That file is intended only for firmware updates on an already installed controller.
 
 ## First Wi-Fi setup
 
@@ -157,7 +156,7 @@ After the initial installation, firmware can be updated directly from the web in
 Use the application-only image:
 
 ```text
-bp10_dsp_controller.bin
+bp10-dsp-controller-vX.X.X-ota.bin
 ```
 
 The controller validates the firmware before activating it. Wi-Fi settings and saved DSP profiles remain stored during a normal firmware update.
