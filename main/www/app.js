@@ -1701,7 +1701,7 @@
 
     // PreEQ
     const peq = dsp.preeq || {};
-    html += '<div class="preview-item"><strong>PreEQ</strong>';
+    html += '<div class="preview-item"><strong>Pre EQ</strong>';
     html += `<span>${peq.enabled ? 'ON' : 'OFF'}</span>`;
     html += `<span>Pre-Gain: ${peq.pregain_db != null ? Number(peq.pregain_db).toFixed(2) + ' dB' : '-'}</span>`;
     html += '</div>';
