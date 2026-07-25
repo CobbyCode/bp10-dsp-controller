@@ -24,3 +24,6 @@ Thumbs.db
 *.key
 *.cert
 wifi_credentials.h
+
+# Internal planning — not for public repo
+tickets/
