@@ -506,20 +506,72 @@ esp_err_t mvs_drc_a800x_to_view(const mvs_drc_packed_state_t *state,
     memset(view, 0, sizeof(*view));
 
     const int fb = 3;  // A800X Full-Band index = 3
+    const int lower = 0;  // A800X Lower-Band index
+    const int upper = 1;  // A800X Upper-Band index
     view->valid = true;
     view->enabled = state->enabled != 0;
     view->mode = state->mode;
-    view->full_band_supported = (state->mode == 0);
+
+    /*
+     * A800X DRC modes map to the same visibility as unified DRC:
+     * 0   Full Band
+     * 1-3 2 Band (Butterworth order 1/order 2/custom Q)
+     * 4-6 2 Band + Full Band
+     */
+    switch (state->mode) {
+        case 0:
+            view->full_band_supported = true;
+            break;
+        case 1:
+        case 2:
+        case 3:
+            view->lower_upper_visible = true;
+            view->crossover_visible = true;
+            view->q_visible = state->mode == 3;
+            break;
+        case 4:
+        case 5:
+        case 6:
+            view->lower_upper_visible = true;
+            view->full_band_supported = true;
+            view->crossover_visible = true;
+            view->q_visible = state->mode == 6;
+            break;
+        default:
+            break;
+    }
+
+    // Crossover (valid in all multiband modes)
+    view->crossover_hz = state->crossover_freq1_hz;
+    view->q_lp = state->crossover_q1_raw / 1024.0;
+    view->q_hp = state->crossover_q2_raw / 1024.0;
+
     /* A800X clamps the zero/silence pregain sentinel to raw 1. Treat both
      * representations as the same semantic -72 dB floor. */
-    view->bands[MVS_DRC_BAND_FULL].pregain_db =
-        state->pregains[fb] <= 1
-            ? -72.0
-            : 20.0 * log10(state->pregains[fb] / 4096.0);
-    view->bands[MVS_DRC_BAND_FULL].threshold_db = state->thresholds[fb] / 100.0;
-    view->bands[MVS_DRC_BAND_FULL].ratio = state->ratios[fb] / 100.0;
-    view->bands[MVS_DRC_BAND_FULL].attack_ms = state->attacks[fb];
-    view->bands[MVS_DRC_BAND_FULL].release_ms = state->releases[fb];
+    if (view->full_band_supported) {
+        view->bands[MVS_DRC_BAND_FULL].pregain_db =
+            state->pregains[fb] <= 1
+                ? -72.0
+                : 20.0 * log10(state->pregains[fb] / 4096.0);
+        view->bands[MVS_DRC_BAND_FULL].threshold_db = state->thresholds[fb] / 100.0;
+        view->bands[MVS_DRC_BAND_FULL].ratio = state->ratios[fb] / 100.0;
+        view->bands[MVS_DRC_BAND_FULL].attack_ms = state->attacks[fb];
+        view->bands[MVS_DRC_BAND_FULL].release_ms = state->releases[fb];
+    }
+    if (view->lower_upper_visible) {
+        for (int i = 0; i < 2; ++i) {
+            size_t src = i == 0 ? lower : upper;
+            size_t dst = i == 0 ? MVS_DRC_BAND_LOWER : MVS_DRC_BAND_UPPER;
+            view->bands[dst].pregain_db =
+                state->pregains[src] <= 1
+                    ? -72.0
+                    : 20.0 * log10(state->pregains[src] / 4096.0);
+            view->bands[dst].threshold_db = state->thresholds[src] / 100.0;
+            view->bands[dst].ratio = state->ratios[src] / 100.0;
+            view->bands[dst].attack_ms = state->attacks[src];
+            view->bands[dst].release_ms = state->releases[src];
+        }
+    }
 
     return ESP_OK;
 }

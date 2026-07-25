@@ -759,8 +759,35 @@ esp_err_t dsp_model_set_drc_mode_path(mvs_path_id_t path_id, uint16_t mode,
     if (!confirmed || mode > 6) return ESP_ERR_INVALID_ARG;
     const mvs_effect_path_t *path = mvs_device_profile_get_path(
         &s_device_profile, path_id);
-    if (!path || !path->drc.available ||
-        path->drc_schema != MVS_DRC_SCHEMA_UNIFIED_2BAND)
+    if (!path || !path->drc.available)
+        return ESP_ERR_NOT_SUPPORTED;
+
+    if (path->drc_schema == MVS_DRC_SCHEMA_A800X_4PATH) {
+        // Read full state, change mode, write full frame back
+        mvs_drc_packed_state_t before;
+        esp_err_t err = read_drc_a800x_state_id(path->drc.effect_id, &before);
+        if (err != ESP_OK) return err;
+        if (before.mode == mode) {
+            // No change needed, just convert to view
+            return mvs_drc_a800x_to_view(&before, confirmed);
+        }
+        before.mode = mode;
+        uint8_t full_frame[60];
+        err = mvs_build_drc_a800x_full_frame(
+            path->drc.effect_id, &before, full_frame, sizeof(full_frame));
+        if (err == ESP_OK)
+            err = send_mvs_command(full_frame, sizeof(full_frame));
+        if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(20));
+
+        mvs_drc_packed_state_t after;
+        err = read_drc_a800x_state_id(path->drc.effect_id, &after);
+        if (err != ESP_OK) return err;
+        if (after.mode != mode) return ESP_ERR_INVALID_RESPONSE;
+        return mvs_drc_a800x_to_view(&after, confirmed);
+    }
+
+    if (path->drc_schema != MVS_DRC_SCHEMA_UNIFIED_2BAND)
         return ESP_ERR_NOT_SUPPORTED;
 
     mvs_drc_state_t before;
@@ -797,22 +824,59 @@ esp_err_t dsp_model_update_drc_view_path(mvs_path_id_t path_id,
         mvs_drc_packed_state_t before;
         esp_err_t err = read_drc_a800x_state_id(effect_id, &before);
         if (err != ESP_OK) return err;
-        if (before.mode != requested->mode || before.mode != 0)
-            return ESP_ERR_INVALID_STATE;
+        if (requested->mode > 6) return ESP_ERR_INVALID_ARG;
+
+        // Resolve mode-dependent band visibility
+        dsp_drc_view_t current;
+        mvs_drc_packed_state_t temp = {.mode = requested->mode};
+        mvs_drc_a800x_to_view(&temp, &current);
 
         mvs_drc_packed_state_t desired = before;
-        const dsp_drc_band_view_t *full =
-            &requested->bands[MVS_DRC_BAND_FULL];
+        desired.mode = requested->mode;
         desired.enabled = requested->enabled ? 1U : 0U;
-        desired.pregains[3] = full->pregain_db <= -72.0
-            ? 0U
-            : (uint16_t)lround(
-                4096.0 * pow(10.0, full->pregain_db / 20.0));
-        desired.thresholds[3] =
-            (int16_t)lround(full->threshold_db * 100.0);
-        desired.ratios[3] = (uint16_t)lround(full->ratio * 100.0);
-        desired.attacks[3] = full->attack_ms;
-        desired.releases[3] = full->release_ms;
+
+        // Crossover (shared for all multiband modes)
+        if (current.crossover_visible) {
+            desired.crossover_freq1_hz = requested->crossover_hz;
+            desired.crossover_freq2_hz = requested->crossover_hz;
+        }
+        if (current.q_visible) {
+            desired.crossover_q1_raw = (uint16_t)lround(requested->q_lp * 1024.0);
+            desired.crossover_q2_raw = (uint16_t)lround(requested->q_hp * 1024.0);
+        }
+
+        // Full band (mode 0, modes 4-6)
+        if (current.full_band_supported) {
+            const dsp_drc_band_view_t *fb =
+                &requested->bands[MVS_DRC_BAND_FULL];
+            desired.pregains[3] = fb->pregain_db <= -72.0
+                ? 0U
+                : (uint16_t)lround(
+                    4096.0 * pow(10.0, fb->pregain_db / 20.0));
+            desired.thresholds[3] =
+                (int16_t)lround(fb->threshold_db * 100.0);
+            desired.ratios[3] = (uint16_t)lround(fb->ratio * 100.0);
+            desired.attacks[3] = fb->attack_ms;
+            desired.releases[3] = fb->release_ms;
+        }
+
+        // Lower/upper bands (modes 1-6)
+        if (current.lower_upper_visible) {
+            for (int i = 0; i < 2; ++i) {
+                size_t view_idx = i == 0 ? MVS_DRC_BAND_LOWER : MVS_DRC_BAND_UPPER;
+                const dsp_drc_band_view_t *b =
+                    &requested->bands[view_idx];
+                desired.pregains[i] = b->pregain_db <= -72.0
+                    ? 0U
+                    : (uint16_t)lround(
+                        4096.0 * pow(10.0, b->pregain_db / 20.0));
+                desired.thresholds[i] =
+                    (int16_t)lround(b->threshold_db * 100.0);
+                desired.ratios[i] = (uint16_t)lround(b->ratio * 100.0);
+                desired.attacks[i] = b->attack_ms;
+                desired.releases[i] = b->release_ms;
+            }
+        }
 
         uint8_t full_frame[60];
         err = mvs_build_drc_a800x_full_frame(

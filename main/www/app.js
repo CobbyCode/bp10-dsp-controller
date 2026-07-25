@@ -940,8 +940,7 @@
     $('drc-enable').checked = data.enabled === true;
     $('drc-enable').disabled = drcVisibleBands.length === 0;
     $('drc-mode').value = String(drcMode);
-    $('drc-mode').disabled = drcMode < 0 || drcMode > 6 ||
-      activeCapabilities.drc_schema === 'a800x_4path';
+    $('drc-mode').disabled = drcMode < 0 || drcMode > 6;
     $('drc-mode-label').textContent = `Mode ${drcMode}`;
     $('drc-crossover-fields').classList.toggle('hidden', data.crossover_visible !== true);
     $('drc-crossover').disabled = data.crossover_visible !== true;
@@ -965,7 +964,7 @@
     }).join('');
     $('drc-bands').querySelectorAll('input').forEach(input =>
       input.addEventListener('input', markDrcDirty));
-    $('btn-drc-reset').disabled = !(data.full_band_supported && hasA800xFactoryDefaults());
+    $('btn-drc-reset').disabled = !hasA800xFactoryDefaults();
     $('btn-drc-apply').disabled = drcVisibleBands.length === 0;
     renderedDrcKey = currentDrcKey();
     drcEditor.classList.toggle('is-dirty', dirty === true);
@@ -1015,7 +1014,7 @@
     $('drc-mode-label').textContent = 'Mode not read';
     drcMode = null;
     drcVisibleBands = [];
-    $('btn-drc-reset').disabled = true;
+    $('btn-drc-reset').disabled = !hasA800xFactoryDefaults();
     $('btn-drc-apply').disabled = true;
     drcState.textContent = 'NOT READ';
     drcState.className = 'module-state';
@@ -1078,22 +1077,30 @@
           adoptDrcReadback(reread.data.drc, true);
       } catch (_) {}
     } finally {
-      $('drc-mode').disabled = drcMode == null || drcMode < 0 || drcMode > 6 ||
-        activeCapabilities.drc_schema === 'a800x_4path';
+      $('drc-mode').disabled = drcMode == null || drcMode < 0 || drcMode > 6;
     }
   });
 
   $('btn-drc-reset').addEventListener('click', () => {
     if (!hasA800xFactoryDefaults()) return;
-    $('drc-enable').checked = true;
-    const full = $('drc-bands').querySelector('[data-drc-band="full"]');
-    if (!full) return;
-    full.querySelector('[data-key="pregain_db"]').value = '2.00';
-    full.querySelector('[data-key="threshold_db"]').value = '-5.00';
-    full.querySelector('[data-key="ratio"]').value = '1';
-    full.querySelector('[data-key="attack_ms"]').value = 2;
-    full.querySelector('[data-key="release_ms"]').value = 800;
-    markDrcDirty();
+    // Build mode-0 Full-Band factory view and re-render the entire form
+    const factory = {
+      enabled: true,
+      mode: 0,
+      lower_upper_visible: false,
+      full_band_supported: true,
+      crossover_visible: false,
+      q_visible: false,
+      crossover_hz: 300,
+      q_lp: 0.707,
+      q_hp: 0.707,
+      bands: {
+        lower:  { pregain_db: 0, threshold_db: 0, ratio: 1, attack_ms: 2, release_ms: 100 },
+        upper:  { pregain_db: 0, threshold_db: 0, ratio: 1, attack_ms: 2, release_ms: 100 },
+        full:   { pregain_db: 2.00, threshold_db: -5.00, ratio: 1, attack_ms: 2, release_ms: 800 }
+      }
+    };
+    adoptDrcReadback(factory, true);
     drcMessage.textContent = 'Full-Band factory values loaded locally · Apply to write';
     drcMessage.className = 'form-message';
   });
