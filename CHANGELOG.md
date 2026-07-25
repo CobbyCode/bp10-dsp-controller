@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.1 - 2026-07-25
+
+- Remove profile-dependent DRC mode lock on AIYIMA A800X: all modes 0-6
+  (Full Band, 2 Band, 2 Band + Full Band) are now selectable through the
+  same shared DRC view, matching the Generic ACP profile behaviour.
+- Expand the A800X DRC view codec so that non-zero modes expose the correct
+  lower, upper, full band visibility, crossover, and Q controls.
+- Keep the A800X DRC wire protocol (54-byte four-path format) unchanged;
+  all mode writes, readbacks, persist, import, and export operate through
+  the existing full-frame codec.
+- Make the DRC Load Factory Values button active in every mode. Clicking it
+  resets the local form to mode 0 Full Band with the known A800X factory
+  values without writing to the DSP until Apply.
+- UI label: PreEQ → Pre EQ for consistency with Out EQ.
+
 ## 0.5.0 - 2026-07-24
 
 - Add profile-driven Music and Rec DSP paths for compatible Generic ACP
