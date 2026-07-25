@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2 - 2026-07-26
+
+- UI: rename Music Delay to Delay and Music Phase to Phase in the
+  module summaries so the path-agnostic Generic ACP labels match the
+  existing Pre EQ and Out EQ naming.
+- UI: highlight the active Music or Rec path button in the same accent
+  colour used by primary actions, by adding a `.btn-secondary.active`
+  style next to the existing `.btn-secondary` rule.
+
 ## 0.5.1 - 2026-07-25
 
 - Remove profile-dependent DRC mode lock on AIYIMA A800X: all modes 0-6

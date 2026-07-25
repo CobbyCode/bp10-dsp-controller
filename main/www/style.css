@@ -267,6 +267,7 @@ input[type="url"] { flex: 1; }
 }
 .btn-primary { background: var(--accent); color: #101708; font-weight: 750; }
 .btn-secondary { background: #555; }
+.btn-secondary.active { background: var(--accent); color: #101708; font-weight: 750; }
 .btn-danger { background: #c0392b; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
